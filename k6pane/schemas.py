@@ -28,7 +28,8 @@ DOCTOR = {
 RUN = {
     "name": "k6pane_run",
     "description": (
-        "Run a k6 load test locally and return parsed results: verdict (pass/fail/error), RPS, "
+        "Run a k6 load test locally and return parsed results: verdict (pass/fail/invalid/error) with an "
+        "explanation, RPS, "
         "error rate, latency avg/p50/p90/p95/p99/max in ms, per-endpoint breakdown, threshold results, "
         "and a run_id for later comparison. Two modes: (1) structured: give `url` or `requests` plus "
         "`profile`/`vus`/`duration` and k6pane writes the script; (2) custom: give `script` (k6 JavaScript) "
@@ -65,7 +66,9 @@ RUN = {
                           "required": ["duration", "target"]},
                 "description": "Explicit ramp stages; overrides profile.",
             },
-            "rate": {"type": "integer", "description": "Fixed arrival rate in requests (iterations) per second."},
+            "rate": {"type": "integer",
+                     "description": "Fixed arrival rate in ITERATIONS per second. Each iteration runs the whole "
+                                    "`requests` flow, so a 3-step flow at rate 100 sends ~300 requests/s."},
             "max_vus": {"type": "integer", "description": "VU ceiling for `rate` mode (default 2x vus)."},
             "p95_ms": {"type": "number", "description": "Pass threshold: p95 latency below this (default 500)."},
             "p99_ms": {"type": "number", "description": "Optional pass threshold for p99 latency."},

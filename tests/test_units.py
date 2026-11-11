@@ -186,3 +186,12 @@ def test_fence_excludes_exactly_validated_ips(plugin):
     for bad in ("127.0.0.2", "10.1.2.4", "8.8.8.8", "192.168.1.1", "::2", "2001:db8::1", "0.0.0.0", "255.255.255.255"):
         assert blocked(bad)
     assert guard.fence([]) == ["0.0.0.0/0", "::/0"]
+
+
+def test_rate_cap_counts_requests_per_iteration(plugin, k6home, monkeypatch):
+    from k6pane import tools
+    monkeypatch.setenv("K6PANE_MAX_RPS", "250")
+    reqs = [{"url": "http://localhost:1/a"}, {"url": "http://localhost:1/b"}, {"url": "http://localhost:1/c"}]
+    out = json.loads(tools.run({"requests": reqs, "rate": 100, "duration": "5s", "dry_run": True}))
+    assert "300 requests/s" in out["error"]
+    assert "error" not in json.loads(tools.run({"requests": reqs, "rate": 80, "duration": "5s", "dry_run": True}))

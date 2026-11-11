@@ -115,7 +115,7 @@ def _check_limits(planned_s: float, peak_vus: int, rate: Any) -> None:
         raise ValueError(f"Planned duration {int(planned_s)}s exceeds K6PANE_MAX_DURATION "
                          f"({int(guard.max_duration_seconds())}s).")
     if rate and int(rate) > guard.max_rps():
-        raise ValueError(f"Rate {rate} req/s exceeds K6PANE_MAX_RPS={guard.max_rps()}.")
+        raise ValueError(f"Planned {rate} requests/s exceeds K6PANE_MAX_RPS={guard.max_rps()}.")
 
 
 def run(args: Dict[str, Any], **kwargs: Any) -> str:
@@ -145,6 +145,7 @@ def _run(args: Dict[str, Any]) -> str:
     extra_args: List[str] = []
     warnings: List[str] = []
     cwd = None
+    target_rate = rate_duration_s = None
 
     if script_text or script_path_arg:
         mode = "script"
@@ -181,10 +182,13 @@ def _run(args: Dict[str, Any]) -> str:
         spec["requests"] = redact.secretize_requests(spec["requests"], bag)
         secret_names = redact.find_refs(spec["requests"], "secret")
         built = scriptgen.build_options(spec)
-        _check_limits(built["planned_seconds"], built["peak_vus"], spec.get("rate"))
+        planned_rps = spec["rate"] * len(spec["requests"]) if spec.get("rate") else None
+        _check_limits(built["planned_seconds"], built["peak_vus"], planned_rps)
         script_text = scriptgen.render_script(spec, built["options"])
         urls = [r["url"] for r in spec["requests"]]
         planned = built["planned_seconds"]
+        if spec.get("rate"):
+            target_rate, rate_duration_s = float(spec["rate"]), float(spec["duration_s"])
         profile = spec["profile"] + (" (arrival-rate)" if spec.get("rate") else "")
         spec_info = {"mode": "generated", "peak_vus": built["peak_vus"], "options": built["options"],
                      "requests": [{k: r[k] for k in ("name", "method", "url", "expect_status")}
@@ -225,19 +229,18 @@ def _run(args: Dict[str, Any]) -> str:
     compact = summary.summarize(export) if export else None
     logs = runner.log_excerpt(run_dir / "k6.log")
 
-    if compact is None:
-        verdict = "error"
-    elif info["exit_code"] == 0 and compact["thresholds_passed"]:
-        verdict = "pass"
-    elif info["exit_code"] in (0, 99):
-        verdict = "fail"
-    else:
-        verdict = "error"
+    decision = summary.decide_verdict(
+        info["exit_code"], bool(info["timed_out"]), compact,
+        target_rate=target_rate, rate_duration_s=rate_duration_s, log_errors=logs["errors"],
+    )
+    verdict = decision["verdict"]
 
     result: Dict[str, Any] = {
         "run_id": run_dir.name,
         "label": label,
         "verdict": verdict,
+        "explanation": decision["explanation"],
+        "invalid_reasons": decision["invalid_reasons"],
         "profile": profile,
         "started_at": started_at,
         "target_hosts": hosts,
@@ -259,8 +262,12 @@ def _run(args: Dict[str, Any]) -> str:
     baseline_id = args.get("baseline_run_id")
     if baseline_id and compact:
         base = store.load_run(str(baseline_id))
-        if base and base.get("summary"):
+        if base and base.get("verdict") == "invalid":
+            result["comparison_error"] = f"Baseline run {baseline_id!r} is invalid and cannot be compared against."
+        elif base and base.get("summary"):
             result["comparison"] = summary.compare(compact, base["summary"])
+            if verdict == "invalid":
+                result["comparison"]["caveat"] = "This run is invalid; the comparison is not meaningful."
         else:
             result["comparison_error"] = f"Baseline run {baseline_id!r} not found or has no summary."
 
@@ -300,11 +307,16 @@ def report(args: Dict[str, Any], **kwargs: Any) -> str:
             base = store.load_run(str(baseline_id))
             if not base:
                 return _err(f"Baseline run {baseline_id!r} not found.")
+            if base.get("verdict") == "invalid":
+                return _err(f"Baseline run {baseline_id!r} is invalid (the requested load was not applied); "
+                            "pick a valid baseline.")
             if not current.get("summary") or not base.get("summary"):
                 return _err("One of the runs has no summary (it errored before k6 produced results).")
             tol = float(args.get("tolerance_pct") or 10)
-            return _ok({"run_id": run_id, "baseline_run_id": baseline_id,
-                        **summary.compare(current["summary"], base["summary"], tol)})
+            cmp = summary.compare(current["summary"], base["summary"], tol)
+            if current.get("verdict") == "invalid":
+                cmp["caveat"] = "The current run is invalid; the comparison is not meaningful."
+            return _ok({"run_id": run_id, "baseline_run_id": baseline_id, **cmp})
 
         return _err("`action` must be one of: list, get, compare.")
     except Exception as exc:

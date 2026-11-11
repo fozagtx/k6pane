@@ -79,6 +79,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(404)
         if self.path.startswith("/secure"):
             return self._send(200 if self._secure_ok() else 401)
+        if self.path.startswith("/slow"):
+            import time as _time
+
+            _time.sleep(0.2)
         return self._send(200)
 
     def do_POST(self):

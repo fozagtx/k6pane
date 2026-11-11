@@ -17,10 +17,13 @@ Use the `k6pane_*` tools when the user wants to load test, stress test, benchmar
    - "where does it break": `stress`, with `vus` set to an upper bound
    - "sudden traffic burst": `spike`
    - "memory leak / long-run stability": `soak` (long `duration`)
-   - "can it do N requests per second": `rate: N`
+   - "can it do N requests per second": `rate: N` for a one-request test. `rate` counts iterations (whole flows), so divide by the number of steps for a multi-step flow, and set `max_vus` high enough that slow responses don't run out of VUs.
 5. **Thresholds**: map the user's SLO to `p95_ms`, `p99_ms` and `max_error_rate`. The defaults are p95 < 500ms and errors < 1%.
-6. **Report** in plain terms: verdict, RPS, p95/p99, error rate, the slowest endpoint (from `summary.endpoints`), and any failed checks or thresholds. Name the bottleneck, don't just dump numbers.
-7. **Regressions**: keep the `run_id`. After a code change, rerun with the same parameters and `baseline_run_id`, or use `k6pane_report action=compare`.
+6. **Check the verdict first**:
+   - `invalid`: the requested load was never applied (dropped iterations, achieved rate below target, insufficient VUs, or timeout). Do NOT report it as pass or fail. Read `invalid_reasons` to the user and fix the cause, usually by raising `max_vus` for a `rate` test, lowering the load, or checking whether the k6 machine is overloaded. Then rerun.
+   - `error`: the script or config is broken; show `k6_errors`.
+7. **Report** in plain terms: verdict, RPS, p95/p99, error rate, the slowest endpoint (from `summary.endpoints`), and any failed checks or thresholds. Name the bottleneck, don't just dump numbers.
+8. **Regressions**: keep the `run_id`. After a code change, rerun with the same parameters and `baseline_run_id`, or use `k6pane_report action=compare`.
 
 ## Multi-step flows
 

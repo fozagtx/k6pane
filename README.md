@@ -7,7 +7,7 @@ A [Hermes Agent](https://hermes-agent.nousresearch.com) plugin for running [k6](
 | Tool | What it does |
 |---|---|
 | `k6pane_doctor` | Checks that k6 is installed (prints the install command if not), and shows the version, limits, allowed hosts and where runs are stored. |
-| `k6pane_run` | Runs a test. It has two modes. **Structured mode** takes `url` or a multi-step `requests` flow plus a `profile` (`smoke`, `load`, `stress`, `spike`, `soak`, `constant`), or a fixed `rate` in requests per second. **Custom mode** takes your own `script` or `script_path`. It returns the verdict, RPS, error rate, latency (p50/p90/p95/p99), a per-endpoint breakdown, threshold results and failed checks. `dry_run` only generates the script. |
+| `k6pane_run` | Runs a test. It has two modes. **Structured mode** takes `url` or a multi-step `requests` flow plus a `profile` (`smoke`, `load`, `stress`, `spike`, `soak`, `constant`), or a fixed `rate` in iterations per second (each iteration runs the whole flow). **Custom mode** takes your own `script` or `script_path`. It returns the verdict, RPS, error rate, latency (p50/p90/p95/p99), a per-endpoint breakdown, threshold results and failed checks. `dry_run` only generates the script. |
 | `k6pane_report` | `list` shows recent runs, `get` returns one run's full result, and `compare` diffs a run against a baseline and flags latency, RPS or error regressions. |
 
 There is also a bundled skill (installed to `~/.hermes/skills/k6pane/SKILL.md` on first load). It teaches the agent the workflow: smoke test first, map the user's SLO to thresholds, report the bottleneck, and compare against a baseline.
@@ -78,7 +78,11 @@ flowchart TD
 
 1. **Script generation**: structured requests are turned into a k6 script. Your config is embedded as JSON, so URLs, headers and bodies can't inject JavaScript. Per-endpoint tags and sub-metric thresholds give a latency and error breakdown for each endpoint.
 2. **Execution**: runs `k6 run --summary-export` locally with a timeout of the planned duration plus 60s. On timeout k6 gets SIGINT, so it still writes a summary.
-3. **Parsing**: the k6 summary export is reduced to the numbers that matter. k6 exit codes map to `pass` (all thresholds met), `fail` (a threshold was crossed) or `error` (bad script or config).
+3. **Parsing**: the k6 summary export is reduced to the numbers that matter, and each run gets a verdict with an `explanation`:
+   - `pass`: all thresholds met under the requested load.
+   - `fail`: the target crossed a threshold under the requested load.
+   - `invalid`: the requested load was never actually applied, so the numbers don't answer the question. This happens when k6 dropped iterations, reached less than 95% of the target arrival rate, reported "Insufficient VUs", or the run hit the timeout. The `invalid_reasons` field says which. With arrival-rate tests, drops often mean `max_vus` is too low for the target's response time rather than a slow machine. Invalid runs can't be used as a comparison baseline.
+   - `error`: the script or config is broken.
 4. **Storage**: every run is kept under `~/.hermes/k6pane/runs/<run_id>/` so it can be compared with later runs.
 
 ### Project layout
@@ -106,7 +110,7 @@ tests/             unit + end-to-end tests
 k6pane is for load testing systems you run yourself.
 
 - **Targets**: only hosts that resolve to loopback, private or link-local addresses are allowed by default. To test a remote host you own, add it to `K6PANE_ALLOWED_HOSTS` (comma separated, `*.staging.example.com` wildcards work) in `~/.hermes/.env`. The agent cannot change this list.
-- **Size caps**: `K6PANE_MAX_VUS` (default 200), `K6PANE_MAX_DURATION` (default `30m`), `K6PANE_MAX_RPS` (default 2000). A test over a limit is rejected, not silently shrunk.
+- **Size caps**: `K6PANE_MAX_VUS` (default 200), `K6PANE_MAX_DURATION` (default `30m`), `K6PANE_MAX_RPS` (default 2000; counted as `rate` × requests per iteration). A test over a limit is rejected, not silently shrunk.
 - **IP fence**: each target host is resolved once and validated, and k6 is then started with `--blacklist-ip` covering every address except those exact IPs. k6 checks the address it actually connects to, so this one fence blocks:
   - redirects from an allowed host to any other host,
   - DNS rebinding between validation and execution,
