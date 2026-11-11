@@ -3,14 +3,31 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from . import guard, runner, scriptgen, store, summary
+from . import guard, redact, runner, scriptgen, store, summary
 from .durations import parse_duration
 
 _GRACE_S = 60
+# A string literal assigned to a credential-looking key inside JS source.
+_CRED_ASSIGN = re.compile(
+    r"""(authorization|api[-_]?key|token|secret|password|passwd|bearer)['"]?\s*[:=]\s*(['"`])(.*?)\2""",
+    re.IGNORECASE,
+)
+
+
+def _has_literal_cred(text: str) -> bool:
+    for match in _CRED_ASSIGN.finditer(text or ""):
+        value = match.group(3).strip()
+        if "${" in value:
+            continue
+        bare = re.sub(r"^(bearer|basic|token)\s+", "", value, flags=re.IGNORECASE)
+        if len(bare) >= 6:
+            return True
+    return False
 
 
 def _ok(data: Dict[str, Any]) -> str:
@@ -117,6 +134,12 @@ def _run(args: Dict[str, Any]) -> str:
         return _err("k6 is not installed.", install_command=runner.install_hint())
 
     env = {str(k): str(v) for k, v in (args.get("env") or {}).items()}
+    env, sensitive_env = redact.split_env(env)
+    if sensitive_env:
+        return _err(f"env keys {sensitive_env} look like credentials. Pass credentials as secrets instead: the user "
+                    f"sets {redact.SECRET_ENV_PREFIX}<NAME> in ~/.hermes/.env, and you reference ${{secret.NAME}} "
+                    "(structured mode) or list NAME in `secrets` and call secrets.get('NAME') (custom scripts).")
+    bag = redact.SecretBag()
     script_text = args.get("script")
     script_path_arg = args.get("script_path")
     extra_args: List[str] = []
@@ -131,6 +154,12 @@ def _run(args: Dict[str, Any]) -> str:
                 return _err(f"script_path not found: {src}")
             script_text = src.read_text()
             cwd = src.parent
+        elif _has_literal_cred(script_text):
+            return _err("The inline script contains what looks like a literal credential. Never inline secrets: "
+                        "list the secret NAME in `secrets` and read it with "
+                        "`import secrets from 'k6/secrets'; await secrets.get('NAME')`; the user provides "
+                        f"the value as {redact.SECRET_ENV_PREFIX}NAME.")
+        secret_names = [str(n) for n in (args.get("secrets") or [])]
         urls = guard.extract_urls(script_text) + guard.extract_urls(" ".join(env.values()))
         if not urls:
             warnings.append("Could not find any http(s) URL in the script or env to verify the target is local.")
@@ -148,6 +177,8 @@ def _run(args: Dict[str, Any]) -> str:
     else:
         mode = "generated"
         spec = _build_spec(args)
+        spec["requests"] = redact.secretize_requests(spec["requests"], bag)
+        secret_names = redact.find_refs(spec["requests"], "secret")
         built = scriptgen.build_options(spec)
         _check_limits(built["planned_seconds"], built["peak_vus"], spec.get("rate"))
         script_text = scriptgen.render_script(spec, built["options"])
@@ -162,6 +193,14 @@ def _run(args: Dict[str, Any]) -> str:
     if blocked:
         return _err(guard.blocked_message(blocked), blocked_hosts=blocked)
 
+    missing = bag.resolve_env(secret_names)
+    if missing and not dry_run:
+        return _err(f"Missing secret(s): {', '.join(missing)}. Ask the user to set "
+                    + ", ".join(redact.SECRET_ENV_PREFIX + m for m in missing)
+                    + " in ~/.hermes/.env and restart Hermes. Never ask the user to paste the value into chat.",
+                    missing_secrets=missing)
+    secret_values = list(bag.values.values())
+
     if dry_run:
         return _ok({"dry_run": True, "mode": mode, "profile": profile, "planned_seconds": planned,
                     "target_hosts": hosts, "warnings": warnings, "script": script_text})
@@ -169,14 +208,17 @@ def _run(args: Dict[str, Any]) -> str:
     label = str(args.get("label") or (hosts[0] if hosts else "test"))
     run_dir = store.new_run_dir(label)
     script_file = run_dir / "script.js"
-    script_file.write_text(script_text)
+    script_file.write_text(redact.redact_text(script_text, secret_values) if mode == "script" else script_text)
     exec_script = Path(str(script_path_arg)).expanduser().resolve() if script_path_arg else script_file
 
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     info = runner.run_k6(
         binary, exec_script, run_dir / "summary.json", run_dir / "k6.log",
         timeout_s=planned + _GRACE_S, env=env, extra_args=extra_args, cwd=cwd,
+        secret_bytes=bag.secret_file_bytes(),
     )
+    redact.redact_file(run_dir / "summary.json", secret_values)
+    redact.redact_file(run_dir / "k6.log", secret_values)
     export = store.read_json(run_dir / "summary.json")
     compact = summary.summarize(export) if export else None
     logs = runner.log_excerpt(run_dir / "k6.log")
@@ -201,6 +243,8 @@ def _run(args: Dict[str, Any]) -> str:
         "summary": compact,
         "spec": spec_info,
         "warnings": warnings,
+        "secrets_used": [n for n in secret_names if not n.startswith("AUTO_")],
+        "auto_protected_values": sum(1 for n in bag.values if n.startswith("AUTO_")),
         "artifacts": {"dir": str(run_dir), "script": str(script_file),
                       "summary_export": str(run_dir / "summary.json"), "log": str(run_dir / "k6.log")},
     }
@@ -217,6 +261,7 @@ def _run(args: Dict[str, Any]) -> str:
         else:
             result["comparison_error"] = f"Baseline run {baseline_id!r} not found or has no summary."
 
+    result = redact.redact(result, secret_values)
     store.write_json(run_dir / "result.json", result)
     return _ok(result)
 

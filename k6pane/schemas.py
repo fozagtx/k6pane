@@ -6,7 +6,7 @@ _REQUEST = {
         "url": {"type": "string", "description": "Full URL, e.g. http://localhost:3000/api/login"},
         "method": {"type": "string", "description": "HTTP method (default GET)."},
         "name": {"type": "string", "description": "Short endpoint label used in per-endpoint results."},
-        "headers": {"type": "object", "description": "Request headers."},
+        "headers": {"type": "object", "description": "Request headers. Use ${secret.NAME} for credentials."},
         "json": {"description": "JSON body (sets Content-Type: application/json)."},
         "body": {"type": "string", "description": "Raw string body (use instead of json)."},
         "expect_status": {"description": "Expected status code or list of codes (default 200)."},
@@ -36,7 +36,10 @@ RUN = {
         "stress (step up to vus), spike (sudden jump to vus), soak (long steady hold), constant (flat vus). "
         "Set `rate` for a fixed requests-per-second test. Targets must be localhost/private-network "
         "unless the user allowlisted the host in K6PANE_ALLOWED_HOSTS. Start with a smoke test before "
-        "heavy load. The call blocks for the whole test duration. Use dry_run to just generate the script."
+        "heavy load. The call blocks for the whole test duration. Use dry_run to just generate the script. "
+        "Credentials: write ${secret.NAME} in URL paths/queries, headers or bodies; the value comes from the "
+        "user's K6PANE_SECRET_NAME env var and is never stored or shown. Never ask the user to paste a secret "
+        "into chat. Literal credentials under sensitive keys are protected automatically."
     ),
     "parameters": {
         "type": "object",
@@ -73,7 +76,12 @@ RUN = {
             "request_timeout": {"type": "string", "description": "Per-request timeout (default 30s)."},
             "script": {"type": "string", "description": "Full k6 JavaScript test script (custom mode)."},
             "script_path": {"type": "string", "description": "Path to an existing k6 script on disk (custom mode)."},
-            "env": {"type": "object", "description": "Variables passed to the script as __ENV (e.g. BASE_URL)."},
+            "env": {"type": "object",
+                    "description": "Non-secret variables passed to the script as __ENV (e.g. BASE_URL). "
+                                   "Credential-looking keys are rejected; use secrets instead."},
+            "secrets": {"type": "array", "items": {"type": "string"},
+                        "description": "Custom-script mode: secret NAMEs the script reads with "
+                                       "`import secrets from 'k6/secrets'; await secrets.get('NAME')`."},
             "label": {"type": "string", "description": "Human label for this run (used in run_id)."},
             "baseline_run_id": {"type": "string", "description": "Compare results against this earlier run."},
             "dry_run": {"type": "boolean", "description": "Generate and return the script without running it."},

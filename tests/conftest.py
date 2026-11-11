@@ -47,22 +47,52 @@ def k6home(tmp_path, monkeypatch):
     return tmp_path
 
 
-class _Handler(BaseHTTPRequestHandler):
-    def _reply(self):
-        if self.path.startswith("/missing"):
-            self.send_response(404)
-        else:
-            self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(b'{"ok":true}')
+SECURE = {
+    "authorization": "Bearer s3cr3t-token-value-123",
+    "x-api-key": "literal-key-abc123",
+    "query_token": "literal-query-tok9",
+    "password": "pw-literal-777",
+}
 
-    do_GET = _reply
+
+class _Handler(BaseHTTPRequestHandler):
+    def _send(self, status, body=b'{"ok":true}'):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _secure_ok(self, body=None):
+        from urllib.parse import parse_qs, urlsplit
+
+        q = parse_qs(urlsplit(self.path).query)
+        ok = (self.headers.get("Authorization") == SECURE["authorization"]
+              and self.headers.get("X-Api-Key") == SECURE["x-api-key"]
+              and q.get("token", [""])[0] == SECURE["query_token"])
+        if body is not None:
+            ok = ok and body.get("password") == SECURE["password"]
+        return ok
+
+    def do_GET(self):
+        if self.path.startswith("/missing"):
+            return self._send(404)
+        if self.path.startswith("/secure"):
+            return self._send(200 if self._secure_ok() else 401)
+        return self._send(200)
 
     def do_POST(self):
+        import json as _json
+
         length = int(self.headers.get("Content-Length") or 0)
-        self.rfile.read(length)
-        self._reply()
+        raw = self.rfile.read(length)
+        if self.path.startswith("/secure"):
+            try:
+                body = _json.loads(raw or b"{}")
+            except ValueError:
+                body = {}
+            return self._send(200 if self._secure_ok(body) else 401)
+        return self._send(404 if self.path.startswith("/missing") else 200)
 
     def log_message(self, *args):
         pass
@@ -75,3 +105,8 @@ def local_server():
     thread.start()
     yield f"http://127.0.0.1:{server.server_address[1]}"
     server.shutdown()
+
+
+@pytest.fixture
+def secure_values():
+    return dict(SECURE)

@@ -109,6 +109,23 @@ k6pane is for load testing systems you run yourself.
 - **Size caps**: `K6PANE_MAX_VUS` (default 200), `K6PANE_MAX_DURATION` (default `30m`), `K6PANE_MAX_RPS` (default 2000). A test over a limit is rejected, not silently shrunk.
 - **Custom scripts**: targets are checked by scanning the script and `env` values for URLs. A script that builds URLs at runtime can't be fully verified, and k6pane returns a warning when it finds no URL at all. VU caps only apply to the `vus` you pass, not to options defined inside your script.
 
+## Credentials
+
+Never put tokens in chat or in tool calls. Store each one once in `~/.hermes/.env`:
+
+```bash
+K6PANE_SECRET_API_TOKEN=eyJhbGciOi...
+```
+
+Then reference it by name: `"Authorization": "Bearer ${secret.API_TOKEN}"` in structured mode (URL path or query, headers, bodies), or `await secrets.get('API_TOKEN')` in a custom script with `"secrets": ["API_TOKEN"]`.
+
+- Only `K6PANE_SECRET_*` variables can be referenced, so the agent cannot read your other environment variables through a placeholder.
+- Values reach k6 through an inherited pipe (`--secret-source=file=/dev/fd/N`). They never touch disk or the command line, and k6 redacts them from its own logs.
+- Stored scripts keep the placeholder. Every file under `runs/<id>/` and every tool response goes through a redaction pass covering secret values, `Authorization`, `Cookie`, `Set-Cookie` and `Proxy-Authorization` headers, keys or query parameters matching `api_key|token|secret|password|passwd|bearer`, and literal values under those keys, which are moved into protected values automatically.
+- k6 runs with a scrubbed environment (PATH, HOME, locale and temp variables plus the `env` you pass), so scripts can't read your API keys. `env` keys that look like credentials are rejected.
+- Inline custom scripts containing a literal credential are rejected. A `script_path` file is yours, but its stored copy is redacted.
+- Secrets require a POSIX system (macOS or Linux) and k6 with `k6/secrets` support.
+
 ## Other settings
 
 | Variable | Default | Purpose |

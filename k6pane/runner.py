@@ -7,6 +7,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -63,6 +64,25 @@ def install_hint() -> str:
             "(Debian/Ubuntu: apt repo; Fedora: dnf; or: docker pull grafana/k6)")
 
 
+# Variables k6 itself may need from the parent environment. Everything else
+# (API keys, cloud tokens, the user's whole shell env) is withheld from k6.
+_PASSTHROUGH_ENV = ("PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "SYSTEMROOT", "USERPROFILE")
+
+
+def child_env(script_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    env = {k: os.environ[k] for k in _PASSTHROUGH_ENV if k in os.environ}
+    env.update(script_env or {})
+    return env
+
+
+def _feed_pipe(fd: int, data: bytes) -> None:
+    try:
+        with os.fdopen(fd, "wb") as w:
+            w.write(data)
+    except OSError:
+        pass
+
+
 def run_k6(
     binary: str,
     script: Path,
@@ -72,32 +92,56 @@ def run_k6(
     env: Optional[Dict[str, str]] = None,
     extra_args: Optional[List[str]] = None,
     cwd: Optional[Path] = None,
+    secret_bytes: bytes = b"",
 ) -> Dict[str, object]:
-    """Run `k6 run` and return exit info. On timeout, SIGINT lets k6 still write its summary."""
+    """Run `k6 run` and return exit info. On timeout, SIGINT lets k6 still write its summary.
+
+    `env` reaches the script as __ENV through a scrubbed process environment (never argv).
+    `secret_bytes` (KEY=VALUE lines) reaches k6's secret source through an inherited pipe,
+    so secret values never touch disk or the command line, and k6 redacts them from logs.
+    """
     cmd = [
         binary, "run", "--quiet", "--no-color", "--no-usage-report",
         "--summary-trend-stats", TREND_STATS,
         "--summary-export", str(summary_path),
     ]
-    for key, value in (env or {}).items():
-        cmd += ["-e", f"{key}={value}"]
+    pass_fds: tuple = ()
+    writer = None
+    read_fd = write_fd = None
+    if secret_bytes:
+        read_fd, write_fd = os.pipe()
+        pass_fds = (read_fd,)
+        cmd.append(f"--secret-source=file=/dev/fd/{read_fd}")
+        writer = threading.Thread(target=_feed_pipe, args=(write_fd, secret_bytes), daemon=True)
     cmd += list(extra_args or [])
     cmd.append(str(script))
 
     started = time.monotonic()
     timed_out = False
-    with open(log_path, "w") as log:
-        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(cwd) if cwd else None)
-        try:
-            proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            proc.send_signal(signal.SIGINT)
+    try:
+        with open(log_path, "w") as log:
+            proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=str(cwd) if cwd else None,
+                                    env=child_env(env), pass_fds=pass_fds)
+            if read_fd is not None:
+                os.close(read_fd)
+                read_fd = None
+            if writer:
+                writer.start()
             try:
-                proc.wait(timeout=20)
+                proc.wait(timeout=timeout_s)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+                timed_out = True
+                proc.send_signal(signal.SIGINT)
+                try:
+                    proc.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+        if writer is not None and not writer.is_alive() and writer.ident is None and write_fd is not None:
+            os.close(write_fd)  # k6 never started; the writer thread never took ownership
     code = proc.returncode
     return {
         "exit_code": code,

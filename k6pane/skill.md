@@ -35,6 +35,17 @@ Use `requests` for user journeys (each VU runs them in order every iteration):
 
 For anything the structured mode can't express (auth tokens passed between steps, WebSockets, custom logic), write a k6 script and pass it as `script` (or save it in the repo and use `script_path`). Use `dry_run: true` to generate a starting script.
 
+## Credentials
+
+Never put a real token, password or API key into a tool call, and never ask the user to paste one into chat.
+
+- The user stores the value once in `~/.hermes/.env` as `K6PANE_SECRET_<NAME>` (e.g. `K6PANE_SECRET_API_TOKEN=...`) and restarts Hermes.
+- Structured mode: reference it as `${secret.API_TOKEN}` in a URL path or query, a header value, or a body, e.g. `"headers": {"Authorization": "Bearer ${secret.API_TOKEN}"}`. Placeholders are not allowed in the host.
+- Custom scripts: pass `"secrets": ["API_TOKEN"]` and read it with `import secrets from 'k6/secrets'; const t = await secrets.get('API_TOKEN');` inside an `async` function.
+- If a run reports `missing_secrets`, tell the user exactly which `K6PANE_SECRET_*` variable to set.
+- Secret values reach k6 through a pipe (never disk or the command line), k6 redacts them from logs, and k6pane redacts every stored file and tool response. Literal values under sensitive keys (Authorization, Cookie, `api_key`, `password`, ...) are moved into protected values automatically, but prefer `${secret.NAME}`.
+- k6 runs with a scrubbed environment: scripts cannot read the user's other environment variables. Pass non-secret settings through `env`.
+
 ## Rules
 
 - Only test systems the user owns or runs. Remote hosts are blocked unless the user lists them in `K6PANE_ALLOWED_HOSTS`. Never try to get around this; tell the user how to allowlist the host instead.
