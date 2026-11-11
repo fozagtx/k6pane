@@ -1,5 +1,5 @@
 ---
-name: k6pane
+name: load-testing
 description: Load test local services with k6 via the k6pane tools (smoke, load, stress, spike, soak, fixed-RPS), read results, and catch performance regressions.
 ---
 
@@ -42,12 +42,13 @@ For anything the structured mode can't express (auth tokens passed between steps
 
 Never put a real token, password or API key into a tool call, and never ask the user to paste one into chat.
 
-- The user stores the value once in `~/.hermes/.env` as `K6PANE_SECRET_<NAME>` (e.g. `K6PANE_SECRET_API_TOKEN=...`) and restarts Hermes.
+- The user stores the value once as a Hermes secret named `K6PANE_SECRET_<NAME>` (e.g. `K6PANE_SECRET_API_TOKEN`) in their profile, then restarts Hermes. k6pane reads it through Hermes' profile secret scope; you never see the value.
 - Structured mode: reference it as `${secret.API_TOKEN}` in a URL path or query, a header value, or a body, e.g. `"headers": {"Authorization": "Bearer ${secret.API_TOKEN}"}`. Placeholders are not allowed in the host.
 - Custom scripts: pass `"secrets": ["API_TOKEN"]` and read it with `import secrets from 'k6/secrets'; const t = await secrets.get('API_TOKEN');` inside an `async` function.
 - If a run reports `missing_secrets`, tell the user exactly which `K6PANE_SECRET_*` variable to set.
 - Secret values reach k6 through a pipe (never disk or the command line), k6 redacts them from logs, and k6pane redacts every stored file and tool response. Literal values under sensitive keys (Authorization, Cookie, `api_key`, `password`, ...) are moved into protected values automatically, but prefer `${secret.NAME}`.
 - k6 runs with a scrubbed environment: scripts cannot read the user's other environment variables. Pass non-secret settings through `env`.
+- Remote targets must be in k6pane's `allowed_hosts` setting. Only the user changes it; never edit Hermes config or env files to widen it yourself.
 
 ## Rules
 

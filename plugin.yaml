@@ -1,8 +1,49 @@
 name: k6pane
-version: 0.2.0
+version: 0.3.0
 description: Local load testing with k6. Generate, run, store and compare k6 load tests from chat.
-author: kaizen
+author: fozagtx
+manifest_version: 2
+api_version: 1
+license: MIT
+homepage: https://github.com/fozagtx/k6pane
+tags: [load-testing, performance, k6, testing]
+# Tested against Hermes 0.7.0 and current main. Newer surfaces (profile secret scope,
+# plugin data dir, register_skill) are used when present and fall back cleanly when not.
+requires_hermes: ">=0.7.0"
 provides_tools:
   - k6pane_doctor
   - k6pane_run
   - k6pane_report
+provides_hooks: []
+provides_middleware: []
+# Nothing is required to load. The k6 binary is found on PATH (k6pane_doctor reports how to
+# install it). Credentials are optional K6PANE_SECRET_<NAME> variables, resolved per profile
+# through Hermes' secret scope only when a test references ${secret.NAME}.
+requires_env: []
+config_schema:
+  allowed_hosts:
+    type: list
+    default: []
+    description: >-
+      Remote hosts you own or are authorized to load test (wildcards like *.staging.example.com).
+      Localhost and private-network targets never need listing. Env fallback: K6PANE_ALLOWED_HOSTS (comma separated).
+  max_vus:
+    type: int
+    default: 200
+    description: Largest number of virtual users a test may request; larger tests are rejected. Env fallback K6PANE_MAX_VUS.
+  max_duration:
+    type: str
+    default: "30m"
+    description: Longest test duration (k6 format, e.g. 30m); longer tests are rejected. Env fallback K6PANE_MAX_DURATION.
+  max_rps:
+    type: int
+    default: 2000
+    description: Highest planned requests per second (rate x requests per iteration); higher is rejected. Env fallback K6PANE_MAX_RPS.
+  k6_bin:
+    type: str
+    default: ""
+    description: Explicit path to the k6 binary. Default finds k6 on PATH, then Homebrew/system paths. Env fallback K6PANE_K6_BIN.
+  home:
+    type: str
+    default: ""
+    description: Where runs are stored. Default is <HERMES_HOME>/plugin-data/k6pane. Env fallback K6PANE_HOME.

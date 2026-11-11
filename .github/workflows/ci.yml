@@ -12,8 +12,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install
-        run: pip install -e ".[dev]"
+      - name: Install test tools
+        run: pip install "pytest>=8,<10" "ruff>=0.6,<1" "pyyaml>=6,<7"
       - name: Lint
         run: ruff check .
       - uses: grafana/setup-k6-action@v1

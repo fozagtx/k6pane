@@ -1,15 +1,16 @@
-"""Run storage: one directory per run under $K6PANE_HOME (default ~/.hermes/k6pane/runs)."""
+"""Run storage: one directory per run under the Hermes plugin data dir (<HERMES_HOME>/plugin-data/k6pane/runs)."""
 
 from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
 import secrets
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
+
+from . import hermes_host
 
 try:
     import fcntl
@@ -21,12 +22,7 @@ _RUN_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def runs_dir() -> Path:
-    home = os.environ.get("K6PANE_HOME")
-    if home:
-        base = Path(home).expanduser()
-    else:
-        base = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "k6pane"
-    path = base / "runs"
+    path = hermes_host.data_dir() / "runs"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

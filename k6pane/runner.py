@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from . import hermes_host
 from .summary import TREND_STATS
 
 # k6 exit codes (go.k6.io/k6/errext/exitcodes)
@@ -32,7 +33,7 @@ _FALLBACK_PATHS = ("/opt/homebrew/bin/k6", "/usr/local/bin/k6", "/usr/bin/k6", "
 
 
 def find_k6() -> Optional[str]:
-    explicit = os.environ.get("K6PANE_K6_BIN")
+    explicit = hermes_host.setting("k6_bin", "K6PANE_K6_BIN")
     if explicit:
         p = Path(explicit).expanduser()
         return str(p) if p.is_file() and os.access(p, os.X_OK) else None

@@ -12,10 +12,11 @@ Rules:
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any, Dict, Iterable, List, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from . import hermes_host
 
 MASK = "***REDACTED***"
 SECRET_ENV_PREFIX = "K6PANE_SECRET_"
@@ -75,7 +76,10 @@ class SecretBag:
                 continue
             if not _NAME.match(name):
                 raise ValueError(f"Invalid secret name {name!r} (letters, digits, underscore).")
-            value = os.environ.get(SECRET_ENV_PREFIX + name)
+            try:
+                value = hermes_host.get_secret(SECRET_ENV_PREFIX + name)
+            except hermes_host.SecretUnavailable as exc:
+                raise ValueError(str(exc)) from None
             if value is None:
                 missing.append(name)
             else:

@@ -137,7 +137,7 @@ def _run(args: Dict[str, Any]) -> str:
     env, sensitive_env = redact.split_env(env)
     if sensitive_env:
         return _err(f"env keys {sensitive_env} look like credentials. Pass credentials as secrets instead: the user "
-                    f"sets {redact.SECRET_ENV_PREFIX}<NAME> in ~/.hermes/.env, and you reference ${{secret.NAME}} "
+                    f"stores {redact.SECRET_ENV_PREFIX}<NAME> as a Hermes secret in their profile, and you reference ${{secret.NAME}} "
                     "(structured mode) or list NAME in `secrets` and call secrets.get('NAME') (custom scripts).")
     bag = redact.SecretBag()
     script_text = args.get("script")
@@ -202,7 +202,7 @@ def _run(args: Dict[str, Any]) -> str:
     if missing and not dry_run:
         return _err(f"Missing secret(s): {', '.join(missing)}. Ask the user to set "
                     + ", ".join(redact.SECRET_ENV_PREFIX + m for m in missing)
-                    + " in ~/.hermes/.env and restart Hermes. Never ask the user to paste the value into chat.",
+                    + " as Hermes secret(s) in their profile and restart Hermes. Never ask the user to paste the value into chat.",
                     missing_secrets=missing)
 
     if dry_run:

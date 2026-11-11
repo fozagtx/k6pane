@@ -1,18 +1,15 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+# No [build-system], extras or dependency groups on purpose: Hermes treats such a pyproject as
+# "installs nothing", so installing k6pane as a plugin never touches Hermes' Python environment.
+# pip still builds it (PEP 517 legacy setuptools fallback) for `pip install git+...`.
 
 [project]
 name = "k6pane"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local k6 load testing plugin for Hermes Agent"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = []
-
-[project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.entry-points."hermes_agent.plugins"]
 k6pane = "k6pane"
@@ -21,7 +18,7 @@ k6pane = "k6pane"
 packages = ["k6pane"]
 
 [tool.setuptools.package-data]
-k6pane = ["skill.md"]
+k6pane = ["skills/*/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -30,7 +27,7 @@ addopts = "-p no:cacheprovider --import-mode=importlib"
 
 [tool.ruff]
 line-length = 140
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

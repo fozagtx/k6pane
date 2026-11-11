@@ -14,14 +14,15 @@ There is also a bundled skill (installed to `~/.hermes/skills/k6pane/SKILL.md` o
 
 ## Install
 
+Install k6 first (`brew install k6` on macOS; other platforms: https://grafana.com/docs/k6/latest/set-up/install-k6/). Then install the plugin:
+
 ```bash
-brew install k6                     # or see https://grafana.com/docs/k6/latest/set-up/install-k6/
-ln -s "$PWD" ~/.hermes/plugins/k6pane   # or clone this repo into ~/.hermes/plugins/k6pane
-# or install as a package (Hermes discovers it via the hermes_agent.plugins entry point):
-pip install git+https://github.com/fozagtx/k6pane
+hermes plugins install https://github.com/fozagtx/k6pane --enable   # from Git
+# or, for development, clone/symlink this repo into ~/.hermes/plugins/k6pane and enable it:
+hermes plugins enable k6pane
 ```
 
-On newer Hermes versions plugins are opt-in, so also add `k6pane` under `plugins.enabled` in `~/.hermes/config.yaml`. Restart Hermes and run `/plugins`. You should see `k6pane` with 3 tools.
+Restart Hermes and run `/plugins`. You should see `k6pane` with 3 tools. On current Hermes the bundled skill is available as `k6pane:load-testing`. On older releases without `register_skill` the tool descriptions still carry the workflow rules.
 
 ## Usage
 
@@ -66,7 +67,7 @@ flowchart TD
     GU -->|allowed| K["runner.py<br/>k6 run --summary-export"]
     K --> SE[(summary.json + k6.log)]
     SE --> P["summary.py<br/>RPS, errors, p50-p99, endpoints, thresholds"]
-    P --> ST[("store.py<br/>~/.hermes/k6pane/runs/run_id")]
+    P --> ST[("store.py<br/>plugin-data/k6pane/runs/run_id")]
     P -->|baseline_run_id| C[Compare vs baseline]
     ST --> RP["k6pane_report<br/>list / get / compare"]
     P --> V["Verdict: pass / fail / error"]
@@ -83,7 +84,7 @@ flowchart TD
    - `fail`: the target crossed a threshold under the requested load.
    - `invalid`: the requested load was never actually applied, so the numbers don't answer the question. This happens when k6 dropped iterations, reached less than 95% of the target arrival rate, reported "Insufficient VUs", or the run hit the timeout. The `invalid_reasons` field says which. With arrival-rate tests, drops often mean `max_vus` is too low for the target's response time rather than a slow machine. Invalid runs can't be used as a comparison baseline.
    - `error`: the script or config is broken.
-4. **Storage**: every run is kept under `~/.hermes/k6pane/runs/<run_id>/` so it can be compared with later runs.
+4. **Storage**: every run is kept under `<HERMES_HOME>/plugin-data/k6pane/runs/<run_id>/` so it can be compared with later runs.
 
 ### Project layout
 
@@ -101,7 +102,9 @@ k6pane/
   guard.py         target allowlist and size limits
   store.py         run storage
   durations.py     k6 duration parsing
-  skill.md         bundled Hermes skill
+  hermes_host.py   the only module that touches Hermes (settings, secret scope, data dir, skill)
+  redact.py        secret references and redaction
+  skills/load-testing/SKILL.md   bundled skill (k6pane:load-testing)
 tests/             unit + end-to-end tests
 ```
 
@@ -109,8 +112,8 @@ tests/             unit + end-to-end tests
 
 k6pane is for load testing systems you run yourself.
 
-- **Targets**: only hosts that resolve to loopback, private or link-local addresses are allowed by default. To test a remote host you own, add it to `K6PANE_ALLOWED_HOSTS` (comma separated, `*.staging.example.com` wildcards work) in `~/.hermes/.env`. The agent cannot change this list.
-- **Size caps**: `K6PANE_MAX_VUS` (default 200), `K6PANE_MAX_DURATION` (default `30m`), `K6PANE_MAX_RPS` (default 2000; counted as `rate` × requests per iteration). A test over a limit is rejected, not silently shrunk.
+- **Targets**: only hosts that resolve to loopback, private or link-local addresses are allowed by default. To test a remote host you own, add it to the `allowed_hosts` setting (see [Settings](#settings); `*.staging.example.com` wildcards work). The agent is told never to change it, and k6pane has no tool that can.
+- **Size caps**: `max_vus` (default 200), `max_duration` (default `30m`) and `max_rps` (default 2000; counted as `rate` × requests per iteration). A test over a limit is rejected, not silently shrunk.
 - **One run at a time**: a lock on the runs directory (released by the OS if the holder dies) rejects a second concurrent run with `Run <id> is already in progress`, because parallel tests on one machine distort each other's numbers.
 - **IP fence**: each target host is resolved once and validated, and k6 is then started with `--blacklist-ip` covering every address except those exact IPs. k6 checks the address it actually connects to, so this one fence blocks:
   - redirects from an allowed host to any other host,
@@ -123,41 +126,64 @@ k6pane is for load testing systems you run yourself.
 
 ## Credentials
 
-Never put tokens in chat or in tool calls. Store each one once in `~/.hermes/.env`:
+Never put tokens in chat or in tool calls. Store each one once as a Hermes secret named `K6PANE_SECRET_<NAME>`, in your profile's `.env` or any Hermes secret-source plugin:
 
 ```bash
 K6PANE_SECRET_API_TOKEN=eyJhbGciOi...
 ```
 
+k6pane reads it through Hermes' profile-aware secret scope, so under multi-profile gateways each profile only sees its own values.
+
 Then reference it by name: `"Authorization": "Bearer ${secret.API_TOKEN}"` in structured mode (URL path or query, headers, bodies), or `await secrets.get('API_TOKEN')` in a custom script with `"secrets": ["API_TOKEN"]`.
 
-- Only `K6PANE_SECRET_*` variables can be referenced, so the agent cannot read your other environment variables through a placeholder.
+- Only `K6PANE_SECRET_*` names can be referenced, so the agent cannot read your other secrets through a placeholder.
 - Values reach k6 through an inherited pipe (`--secret-source=file=/dev/fd/N`). They never touch disk or the command line, and k6 redacts them from its own logs.
 - Stored scripts keep the placeholder. Every file under `runs/<id>/` and every tool response goes through a redaction pass covering secret values, `Authorization`, `Cookie`, `Set-Cookie` and `Proxy-Authorization` headers, keys or query parameters matching `api_key|token|secret|password|passwd|bearer`, and literal values under those keys, which are moved into protected values automatically.
 - k6 runs with a scrubbed environment (PATH, HOME, locale and temp variables plus the `env` you pass), so scripts can't read your API keys. `env` keys that look like credentials are rejected.
 - Inline custom scripts containing a literal credential are rejected. A `script_path` file is yours, but its stored copy is redacted.
 - Secrets require a POSIX system (macOS or Linux) and k6 with `k6/secrets` support.
 
-## Other settings
+## Settings
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `K6PANE_HOME` | `~/.hermes/k6pane` | Where runs are stored (`runs/<run_id>/` holds `script.js`, `summary.json`, `k6.log`, `result.json`). |
-| `K6PANE_K6_BIN` | `k6` on PATH, then Homebrew/system paths | Explicit path to the k6 binary. |
+Settings live under `plugins.entries.k6pane.settings` in your Hermes config, and appear as a form in the Desktop Plugins tab. Each one also has a `K6PANE_*` environment variable fallback for older Hermes releases and CI.
+
+| Setting | Env fallback | Default | Purpose |
+|---|---|---|---|
+| `allowed_hosts` | `K6PANE_ALLOWED_HOSTS` (comma separated) | `[]` | Remote hosts you own or are authorized to test. Localhost and private-network targets never need listing. |
+| `max_vus` | `K6PANE_MAX_VUS` | `200` | Largest number of virtual users a test may request. |
+| `max_duration` | `K6PANE_MAX_DURATION` | `30m` | Longest test duration. |
+| `max_rps` | `K6PANE_MAX_RPS` | `2000` | Highest planned requests per second. |
+| `k6_bin` | `K6PANE_K6_BIN` | k6 on PATH, then Homebrew/system paths | Explicit path to the k6 binary. |
+| `home` | `K6PANE_HOME` | `<HERMES_HOME>/plugin-data/k6pane` | Where runs are stored (`runs/<run_id>/` holds `script.js`, `summary.json`, `k6.log`, `result.json`). |
+
+Example: `hermes config set plugins.entries.k6pane.settings.allowed_hosts '["staging.example.com"]'`.
+
+## Disclosure
+
+What k6pane does on your machine, so you can decide before installing:
+
+- **Subprocess**: runs the local `k6` binary (`k6 run`, and `k6 version` for the doctor) as a subprocess, never through a shell. It runs no other commands and starts no long-running background processes. Each run ends when the test ends, plus a timeout of the planned duration plus 60 seconds.
+- **Network**: k6 sends load-test traffic only to the targets you ask for, and only to localhost/private-network addresses or hosts listed in `allowed_hosts`. An IP fence (`--blacklist-ip`) blocks every other address, including redirects. Target hostnames are resolved via DNS for validation. k6's anonymous usage report is disabled (`--no-usage-report`). The plugin makes no other network calls: no telemetry, no update checks, no third-party services.
+- **Writes**: each run is stored under `<HERMES_HOME>/plugin-data/k6pane/runs/<run_id>/` (or your `home` setting) as the generated script, the k6 summary, the k6 log and the parsed result, all redacted. It also writes a `run.lock` file beside `runs/`. Nothing is written into your projects or into Hermes' own files.
+- **Reads**: only files you point it at. That's a `script_path` k6 script, which k6 runs with its own directory as the working directory, so the script can `open()` files relative to it. It reads nothing else outside the plugin's data directory.
+- **Credentials**: k6pane stores none. A test that references `${secret.NAME}` resolves `K6PANE_SECRET_NAME` through Hermes' profile-aware secret scope (`agent.secret_scope.get_secret`) at run time, and hands the value to k6 through an inherited pipe, never disk or the command line. It never reads `.env`, `auth.json` or any other credential store itself.
+- **Telemetry**: none.
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install "pytest>=8,<10" "ruff>=0.6,<1" "pyyaml>=6,<7"
 ruff check .
 pytest
 ```
+
+`tests/test_catalog_rules.py` checks the Hermes plugin catalog admission rules offline. It mirrors `hermes plugins validate`: manifest and `requires_hermes`, config schema, the capability probe in a scratch `HERMES_HOME`, no committed binaries or bytecode, public Hermes imports only, no core overrides, no network clients or self-updates, credentials only through Hermes' secret scope, no shell execution, and the disclosure section. Before a catalog submission, also run the real validator against a checkout at the pinned commit: `hermes plugins validate . --install-deps`.
 
 CI (`.github/workflows/ci.yml`) runs lint and the full test suite on every push and pull request, with a real k6 installed. `K6PANE_REQUIRE_K6=1` makes the end-to-end tests fail rather than skip if k6 is missing, so they actually gate pull requests.
 
 Unit tests cover duration parsing, target guards, profile shapes, script generation, summary parsing and comparison. The end-to-end tests start a local HTTP server and run real k6 tests; they're skipped if k6 isn't installed.
 
-Tested against k6 v2.3.0 and Hermes Agent v0.7.0.
+Tested against k6 v2.3.0, Hermes Agent v0.7.0, and the plugin API of Hermes v0.23.
 
 ## License
 

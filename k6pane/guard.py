@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import fnmatch
 import ipaddress
-import os
 import re
 import socket
 from typing import Iterable, List, Tuple
 from urllib.parse import urlsplit
 
+from . import hermes_host
 from .durations import parse_duration
 
 DEFAULT_MAX_VUS = 200
@@ -27,28 +27,29 @@ _URL_RE = re.compile(r"""(?:https?|wss?)://[^\s'"`)<>\]}]+""", re.IGNORECASE)
 
 def max_vus() -> int:
     try:
-        return max(1, int(os.environ.get("K6PANE_MAX_VUS", DEFAULT_MAX_VUS)))
+        return max(1, int(hermes_host.setting("max_vus", "K6PANE_MAX_VUS", DEFAULT_MAX_VUS)))
     except ValueError:
         return DEFAULT_MAX_VUS
 
 
 def max_duration_seconds() -> float:
     try:
-        return parse_duration(os.environ.get("K6PANE_MAX_DURATION", DEFAULT_MAX_DURATION))
+        return parse_duration(hermes_host.setting("max_duration", "K6PANE_MAX_DURATION", DEFAULT_MAX_DURATION))
     except ValueError:
         return parse_duration(DEFAULT_MAX_DURATION)
 
 
 def max_rps() -> int:
     try:
-        return max(1, int(os.environ.get("K6PANE_MAX_RPS", DEFAULT_MAX_RPS)))
+        return max(1, int(hermes_host.setting("max_rps", "K6PANE_MAX_RPS", DEFAULT_MAX_RPS)))
     except ValueError:
         return DEFAULT_MAX_RPS
 
 
 def allowed_hosts() -> List[str]:
-    raw = os.environ.get("K6PANE_ALLOWED_HOSTS", "")
-    return [h.strip().lower() for h in raw.split(",") if h.strip()]
+    raw = hermes_host.setting("allowed_hosts", "K6PANE_ALLOWED_HOSTS", "")
+    items = raw if isinstance(raw, list) else str(raw).split(",")
+    return [str(h).strip().lower() for h in items if str(h).strip()]
 
 
 def extract_urls(text: str) -> List[str]:
@@ -149,7 +150,7 @@ def blocked_message(blocked: List[str]) -> str:
     return (
         f"Refusing to load test host(s) that are non-local or could not be resolved: {', '.join(blocked)}. "
         "k6pane only targets localhost/private networks by default. If you own or are "
-        "authorized to test these hosts, the user must add them to the "
-        "K6PANE_ALLOWED_HOSTS environment variable (e.g. in ~/.hermes/.env: "
-        f"K6PANE_ALLOWED_HOSTS={','.join(blocked)}) and restart Hermes."
+        "authorized to test these hosts, the user must add them to k6pane's allowed_hosts setting "
+        f"(hermes config set plugins.entries.k6pane.settings.allowed_hosts '[{', '.join(blocked)}]') or the "
+        "K6PANE_ALLOWED_HOSTS environment variable, then restart Hermes. Do not change this setting yourself."
     )
