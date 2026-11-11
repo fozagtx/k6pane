@@ -17,6 +17,9 @@ def test_parse_duration(plugin):
 
 def test_guard_local_and_blocked(plugin, monkeypatch):
     from k6pane import guard
+    real = guard.resolve_host
+    fake = {"example.com": ["93.184.215.14"], "staging.example.com": ["93.184.215.15"], "api.localhost": ["127.0.0.1"]}
+    monkeypatch.setattr(guard, "resolve_host", lambda h: fake.get(h, None) or real(h))
     monkeypatch.delenv("K6PANE_ALLOWED_HOSTS", raising=False)
     hosts, blocked = guard.check_targets([
         "http://localhost:3000/a", "http://127.0.0.1/b", "http://10.0.0.5/c", "http://[::1]:8080/",
@@ -153,3 +156,33 @@ def test_root_shim_loads_like_hermes(hermes_loader):
 
     hermes_loader().register(Ctx())
     assert sorted(calls) == ["k6pane_doctor", "k6pane_report", "k6pane_run"]
+
+
+def test_unresolvable_host_blocked(plugin, monkeypatch):
+    from k6pane import guard
+    monkeypatch.setattr(guard, "resolve_host", lambda h: [])
+    monkeypatch.setenv("K6PANE_ALLOWED_HOSTS", "nowhere.invalid")
+    assert guard.check_targets(["http://nowhere.invalid/"])[1] == ["nowhere.invalid"]
+
+
+def test_localhost_must_be_loopback(plugin, monkeypatch):
+    from k6pane import guard
+    monkeypatch.setattr(guard, "resolve_host", lambda h: ["10.0.0.9"] if h == "localhost" else [])
+    assert guard.check_targets(["http://localhost/"])[1] == ["localhost"]
+
+
+def test_fence_excludes_exactly_validated_ips(plugin):
+    import ipaddress
+
+    from k6pane import guard
+    ranges = [ipaddress.ip_network(r) for r in guard.fence(["127.0.0.1", "::1", "10.1.2.3"])]
+
+    def blocked(ip):
+        a = ipaddress.ip_address(ip)
+        return any(a in n for n in ranges if n.version == a.version)
+
+    for ok in ("127.0.0.1", "::1", "10.1.2.3"):
+        assert not blocked(ok)
+    for bad in ("127.0.0.2", "10.1.2.4", "8.8.8.8", "192.168.1.1", "::2", "2001:db8::1", "0.0.0.0", "255.255.255.255"):
+        assert blocked(bad)
+    assert guard.fence([]) == ["0.0.0.0/0", "::/0"]

@@ -22,7 +22,7 @@ DEFAULT_MAX_VUS = 200
 DEFAULT_MAX_DURATION = "30m"
 DEFAULT_MAX_RPS = 2000
 
-_URL_RE = re.compile(r"""https?://[^\s'"`)<>\]}]+""", re.IGNORECASE)
+_URL_RE = re.compile(r"""(?:https?|wss?)://[^\s'"`)<>\]}]+""", re.IGNORECASE)
 
 
 def max_vus() -> int:
@@ -63,18 +63,47 @@ def _is_local_ip(addr: str) -> bool:
     return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
-def _host_is_local(host: str) -> bool:
+def resolve_host(host: str) -> List[str]:
+    """Return every IP address `host` resolves to (or the host itself if it is an IP literal)."""
     host = host.lower().strip("[]")
-    if host in ("localhost",) or host.endswith(".localhost"):
-        return True
-    if _is_local_ip(host):
-        return True
+    try:
+        return [str(ipaddress.ip_address(host.split("%", 1)[0]))]
+    except ValueError:
+        pass
     try:
         infos = socket.getaddrinfo(host, None)
     except (socket.gaierror, UnicodeError):
-        return False
-    addrs = {info[4][0] for info in infos}
-    return bool(addrs) and all(_is_local_ip(a) for a in addrs)
+        return []
+    return sorted({info[4][0].split("%", 1)[0] for info in infos})
+
+
+def fence(ips: Iterable[str]) -> List[str]:
+    """CIDR ranges k6 must refuse to connect to: everything except the validated IPs.
+
+    Pass the IPs returned by `validate_targets` (never re-resolve), so the
+    addresses that were checked are exactly the ones k6 may reach.
+
+    k6 checks the address it actually dials, so this one fence also stops
+    redirects to other hosts, DNS rebinding between validation and execution,
+    and custom scripts that build URLs at runtime.
+    """
+    allowed = []
+    for addr in ips:
+        ip = ipaddress.ip_address(addr)
+        allowed.append(ipaddress.ip_network(f"{ip}/{ip.max_prefixlen}"))
+    blocked = []
+    for universe in (ipaddress.ip_network("0.0.0.0/0"), ipaddress.ip_network("::/0")):
+        nets = [universe]
+        for keep in (a for a in allowed if a.version == universe.version):
+            next_nets = []
+            for net in nets:
+                if keep.subnet_of(net):
+                    next_nets.extend(net.address_exclude(keep))
+                else:
+                    next_nets.append(net)
+            nets = next_nets
+        blocked.extend(sorted(nets))
+    return [str(n) for n in blocked]
 
 
 def _host_is_allowlisted(host: str, patterns: Iterable[str]) -> bool:
@@ -82,24 +111,43 @@ def _host_is_allowlisted(host: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(host, p) for p in patterns)
 
 
-def check_targets(urls: Iterable[str]) -> Tuple[List[str], List[str]]:
-    """Return (hosts, blocked_hosts) for the given URLs."""
+def validate_targets(urls: Iterable[str]) -> Tuple[List[str], List[str], List[str]]:
+    """Resolve each target host once. Return (hosts, blocked_hosts, validated_ips).
+
+    A host is allowed if it is `localhost`, or every address it resolves to is
+    loopback/private/link-local, or it matches K6PANE_ALLOWED_HOSTS. Unresolvable
+    hosts are blocked.
+    """
     patterns = allowed_hosts()
     hosts: List[str] = []
     blocked: List[str] = []
+    ips: List[str] = []
     for url in urls:
         host = urlsplit(url).hostname
         if not host or host in hosts:
             continue
         hosts.append(host)
-        if not (_host_is_local(host) or _host_is_allowlisted(host, patterns)):
+        addrs = resolve_host(host)
+        name = host.lower().strip("[]")
+        local = bool(addrs) and all(_is_local_ip(a) for a in addrs)
+        if name == "localhost" or name.endswith(".localhost"):
+            local = bool(addrs) and all(ipaddress.ip_address(a).is_loopback for a in addrs)
+        if not addrs or not (local or _host_is_allowlisted(host, patterns)):
             blocked.append(host)
+            continue
+        ips.extend(a for a in addrs if a not in ips)
+    return hosts, blocked, ips
+
+
+def check_targets(urls: Iterable[str]) -> Tuple[List[str], List[str]]:
+    """Return (hosts, blocked_hosts) for the given URLs."""
+    hosts, blocked, _ = validate_targets(urls)
     return hosts, blocked
 
 
 def blocked_message(blocked: List[str]) -> str:
     return (
-        f"Refusing to load test non-local host(s): {', '.join(blocked)}. "
+        f"Refusing to load test host(s) that are non-local or could not be resolved: {', '.join(blocked)}. "
         "k6pane only targets localhost/private networks by default. If you own or are "
         "authorized to test these hosts, the user must add them to the "
         "K6PANE_ALLOWED_HOSTS environment variable (e.g. in ~/.hermes/.env: "

@@ -107,7 +107,14 @@ k6pane is for load testing systems you run yourself.
 
 - **Targets**: only hosts that resolve to loopback, private or link-local addresses are allowed by default. To test a remote host you own, add it to `K6PANE_ALLOWED_HOSTS` (comma separated, `*.staging.example.com` wildcards work) in `~/.hermes/.env`. The agent cannot change this list.
 - **Size caps**: `K6PANE_MAX_VUS` (default 200), `K6PANE_MAX_DURATION` (default `30m`), `K6PANE_MAX_RPS` (default 2000). A test over a limit is rejected, not silently shrunk.
-- **Custom scripts**: targets are checked by scanning the script and `env` values for URLs. A script that builds URLs at runtime can't be fully verified, and k6pane returns a warning when it finds no URL at all. VU caps only apply to the `vus` you pass, not to options defined inside your script.
+- **IP fence**: each target host is resolved once and validated, and k6 is then started with `--blacklist-ip` covering every address except those exact IPs. k6 checks the address it actually connects to, so this one fence blocks:
+  - redirects from an allowed host to any other host,
+  - DNS rebinding between validation and execution,
+  - IP literals, and
+  - custom scripts that build URLs at runtime.
+
+  Hosts that don't resolve are refused. An allowlisted remote host is pinned to the IPs it resolved to at validation time, so a CDN that rotates addresses mid-test will see blocked connections.
+- **Custom scripts**: targets come from the URLs found in the script and in `env` values. Anything else the script tries to reach is blocked by the fence. If no URL is found, every connection is blocked and k6pane says so. VU caps only apply to the `vus` you pass, not to options defined inside your script.
 
 ## Credentials
 

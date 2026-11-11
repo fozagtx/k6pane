@@ -162,7 +162,8 @@ def _run(args: Dict[str, Any]) -> str:
         secret_names = [str(n) for n in (args.get("secrets") or [])]
         urls = guard.extract_urls(script_text) + guard.extract_urls(" ".join(env.values()))
         if not urls:
-            warnings.append("Could not find any http(s) URL in the script or env to verify the target is local.")
+            warnings.append("No http(s)/ws(s) URL found in the script or env, so no target could be validated; "
+                            "the IP fence will block every outbound connection.")
         if args.get("vus") is not None:
             extra_args += ["--vus", str(_int(args, "vus"))]
         if args.get("duration"):
@@ -189,7 +190,7 @@ def _run(args: Dict[str, Any]) -> str:
                      "requests": [{k: r[k] for k in ("name", "method", "url", "expect_status")}
                                   for r in spec["requests"]]}
 
-    hosts, blocked = guard.check_targets(urls)
+    hosts, blocked, target_ips = guard.validate_targets(urls)
     if blocked:
         return _err(guard.blocked_message(blocked), blocked_hosts=blocked)
 
@@ -216,6 +217,7 @@ def _run(args: Dict[str, Any]) -> str:
         binary, exec_script, run_dir / "summary.json", run_dir / "k6.log",
         timeout_s=planned + _GRACE_S, env=env, extra_args=extra_args, cwd=cwd,
         secret_bytes=bag.secret_file_bytes(),
+        blacklist=guard.fence(target_ips),
     )
     redact.redact_file(run_dir / "summary.json", secret_values)
     redact.redact_file(run_dir / "k6.log", secret_values)
@@ -239,6 +241,7 @@ def _run(args: Dict[str, Any]) -> str:
         "profile": profile,
         "started_at": started_at,
         "target_hosts": hosts,
+        "allowed_ips": target_ips,
         "k6": info,
         "summary": compact,
         "spec": spec_info,

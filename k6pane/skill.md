@@ -48,6 +48,7 @@ Never put a real token, password or API key into a tool call, and never ask the 
 
 ## Rules
 
+- k6 can only connect to the IPs k6pane validated (an IP fence blocks everything else, including redirects to other hosts). If results show `ip is blacklisted` errors, the target redirected or connected somewhere that wasn't validated: add that URL to the test explicitly (and the allowlist if it's remote) rather than trying to work around it.
 - Only test systems the user owns or runs. Remote hosts are blocked unless the user lists them in `K6PANE_ALLOWED_HOSTS`. Never try to get around this; tell the user how to allowlist the host instead.
 - Limits come from `K6PANE_MAX_VUS`, `K6PANE_MAX_DURATION` and `K6PANE_MAX_RPS`. If a request goes over a limit, tell the user rather than silently shrinking the test.
 - `think_time: 0` gives maximum pressure; the default of 1s is closer to real users.

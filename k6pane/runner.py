@@ -93,6 +93,7 @@ def run_k6(
     extra_args: Optional[List[str]] = None,
     cwd: Optional[Path] = None,
     secret_bytes: bytes = b"",
+    blacklist: Optional[List[str]] = None,
 ) -> Dict[str, object]:
     """Run `k6 run` and return exit info. On timeout, SIGINT lets k6 still write its summary.
 
@@ -113,8 +114,13 @@ def run_k6(
         pass_fds = (read_fd,)
         cmd.append(f"--secret-source=file=/dev/fd/{read_fd}")
         writer = threading.Thread(target=_feed_pipe, args=(write_fd, secret_bytes), daemon=True)
+    shown = list(cmd)
+    if blacklist:
+        cmd += ["--blacklist-ip", ",".join(blacklist)]
+        shown += ["--blacklist-ip", f"<{len(blacklist)} ranges: all except the validated target IPs>"]
     cmd += list(extra_args or [])
     cmd.append(str(script))
+    shown += cmd[len(shown):]
 
     started = time.monotonic()
     timed_out = False
@@ -148,7 +154,7 @@ def run_k6(
         "exit_reason": "timeout" if timed_out else EXIT_CODES.get(code, f"exit_{code}"),
         "timed_out": timed_out,
         "elapsed_s": round(time.monotonic() - started, 1),
-        "command": " ".join(cmd),
+        "command": " ".join(shown),
     }
 
 
