@@ -78,7 +78,7 @@ def normalize_requests(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         try:
             expect = [int(s) for s in expect]
         except (TypeError, ValueError):
-            raise ValueError(f"requests[{i}].expect_status must be an int or list of ints.")
+            raise ValueError(f"requests[{i}].expect_status must be an int or list of ints.") from None
         name = _slug(str(r.get("name") or f"{method} {url.split('://', 1)[1].split('?')[0]}"))
         base, n = name, 2
         while name in seen:

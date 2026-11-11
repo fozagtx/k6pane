@@ -1,0 +1,2 @@
+[hermes_agent.plugins]
+k6pane = k6pane

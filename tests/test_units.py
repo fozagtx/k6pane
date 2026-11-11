@@ -4,7 +4,7 @@ import pytest
 
 
 def test_parse_duration(plugin):
-    from k6pane_under_test.durations import parse_duration
+    from k6pane.durations import parse_duration
     assert parse_duration("30s") == 30
     assert parse_duration("1h30m") == 5400
     assert parse_duration("2m30s") == 150
@@ -16,7 +16,7 @@ def test_parse_duration(plugin):
 
 
 def test_guard_local_and_blocked(plugin, monkeypatch):
-    from k6pane_under_test import guard
+    from k6pane import guard
     monkeypatch.delenv("K6PANE_ALLOWED_HOSTS", raising=False)
     hosts, blocked = guard.check_targets([
         "http://localhost:3000/a", "http://127.0.0.1/b", "http://10.0.0.5/c", "http://[::1]:8080/",
@@ -28,13 +28,13 @@ def test_guard_local_and_blocked(plugin, monkeypatch):
 
 
 def test_extract_urls(plugin):
-    from k6pane_under_test.guard import extract_urls
+    from k6pane.guard import extract_urls
     script = "http.get('http://localhost:3000/a'); http.post(`https://evil.example.org/x`, body);"
     assert extract_urls(script) == ["http://localhost:3000/a", "https://evil.example.org/x"]
 
 
 def test_build_options_profiles(plugin):
-    from k6pane_under_test import scriptgen
+    from k6pane import scriptgen
     reqs = scriptgen.normalize_requests([{"url": "http://localhost/a"}])
     base = {"requests": reqs, "vus": 40, "duration_s": 100}
     for profile in ("load", "stress", "spike", "soak"):
@@ -52,7 +52,7 @@ def test_build_options_profiles(plugin):
 
 
 def test_thresholds_defaults_and_overrides(plugin):
-    from k6pane_under_test import scriptgen
+    from k6pane import scriptgen
     reqs = scriptgen.normalize_requests([{"url": "http://localhost/a", "name": "home"}])
     spec = {"requests": reqs, "vus": 1, "duration_s": 10, "profile": "constant", "p95_ms": 200, "max_error_rate": 0.05}
     th = scriptgen.build_options(spec)["options"]["thresholds"]
@@ -62,7 +62,7 @@ def test_thresholds_defaults_and_overrides(plugin):
 
 
 def test_normalize_requests_validation(plugin):
-    from k6pane_under_test import scriptgen
+    from k6pane import scriptgen
     with pytest.raises(ValueError):
         scriptgen.normalize_requests([])
     with pytest.raises(ValueError):
@@ -74,7 +74,7 @@ def test_normalize_requests_validation(plugin):
 
 
 def test_script_embeds_config_safely(plugin):
-    from k6pane_under_test import scriptgen
+    from k6pane import scriptgen
     reqs = scriptgen.normalize_requests([{"url": "http://localhost/a", "headers": {"X": "'); evil(); //</script>"}}])
     spec = {"requests": reqs, "vus": 1, "duration_s": 5, "profile": "constant"}
     script = scriptgen.render_script(spec, scriptgen.build_options(spec)["options"])
@@ -83,7 +83,7 @@ def test_script_embeds_config_safely(plugin):
 
 
 def test_summarize_and_compare(plugin):
-    from k6pane_under_test import summary
+    from k6pane import summary
     export = {
         "metrics": {
             "http_req_duration": {"avg": 10, "min": 1, "med": 9, "max": 50, "p(90)": 20, "p(95)": 25, "p(99)": 40,
@@ -113,7 +113,7 @@ def test_summarize_and_compare(plugin):
 
 
 def test_run_blocks_remote_and_limits(plugin, k6home, monkeypatch):
-    from k6pane_under_test import tools
+    from k6pane import tools
     out = json.loads(tools.run({"url": "https://example.com/", "dry_run": True}))
     assert "Refusing" in out["error"] and out["blocked_hosts"] == ["example.com"]
     out = json.loads(tools.run({"script": "import http from 'k6/http'; export default () => http.get('https://example.com')",
@@ -125,7 +125,7 @@ def test_run_blocks_remote_and_limits(plugin, k6home, monkeypatch):
 
 
 def test_report_errors(plugin, k6home):
-    from k6pane_under_test import tools
+    from k6pane import tools
     assert json.loads(tools.report({"action": "list"}))["runs"] == []
     assert "not found" in json.loads(tools.report({"action": "get", "run_id": "nope"}))["error"]
     assert "not found" in json.loads(tools.report({"action": "get", "run_id": "../etc"}))["error"]
@@ -141,3 +141,15 @@ def test_register_with_fake_ctx(plugin):
     plugin.register(Ctx())
     assert {c["name"] for c in calls} == {"k6pane_doctor", "k6pane_run", "k6pane_report"}
     assert all(c["toolset"] == "k6pane" and c["schema"]["name"] == c["name"] for c in calls)
+
+
+def test_root_shim_loads_like_hermes(hermes_loader):
+
+    calls = []
+
+    class Ctx:
+        def register_tool(self, **kw):
+            calls.append(kw["name"])
+
+    hermes_loader().register(Ctx())
+    assert sorted(calls) == ["k6pane_doctor", "k6pane_report", "k6pane_run"]

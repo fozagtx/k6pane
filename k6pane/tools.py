@@ -57,7 +57,7 @@ def _int(args: Dict[str, Any], key: str, default: Any = None) -> Any:
     try:
         return int(value)
     except (TypeError, ValueError):
-        raise ValueError(f"`{key}` must be an integer.")
+        raise ValueError(f"`{key}` must be an integer.") from None
 
 
 def _build_spec(args: Dict[str, Any]) -> Dict[str, Any]:

@@ -17,6 +17,8 @@ There is also a bundled skill (installed to `~/.hermes/skills/k6pane/SKILL.md` o
 ```bash
 brew install k6                     # or see https://grafana.com/docs/k6/latest/set-up/install-k6/
 ln -s "$PWD" ~/.hermes/plugins/k6pane   # or clone this repo into ~/.hermes/plugins/k6pane
+# or install as a package (Hermes discovers it via the hermes_agent.plugins entry point):
+pip install git+https://github.com/fozagtx/k6pane
 ```
 
 On newer Hermes versions plugins are opt-in, so also add `k6pane` under `plugins.enabled` in `~/.hermes/config.yaml`. Restart Hermes and run `/plugins`. You should see `k6pane` with 3 tools.
@@ -82,18 +84,21 @@ flowchart TD
 ### Project layout
 
 ```
-plugin.yaml    manifest
-__init__.py    register(ctx): wires tools, installs the skill
-schemas.py     tool schemas the model reads
-tools.py       handlers for k6pane_doctor / k6pane_run / k6pane_report
-scriptgen.py   spec to k6 script (profiles, stages, thresholds)
-runner.py      finds and runs the k6 binary
-summary.py     parses summary exports, compares runs
-guard.py       target allowlist and size limits
-store.py       run storage
-durations.py   k6 duration parsing
-skill.md       bundled Hermes skill
-tests/         unit + end-to-end tests
+__init__.py        Hermes directory-plugin shim (points at ./k6pane/)
+plugin.yaml        Hermes manifest
+pyproject.toml     packaging, pip entry point, pytest + ruff config
+k6pane/
+  plugin.py        register(ctx): wires tools, installs the skill
+  schemas.py       tool schemas the model reads
+  tools.py         handlers for k6pane_doctor / k6pane_run / k6pane_report
+  scriptgen.py     spec to k6 script (profiles, stages, thresholds)
+  runner.py        finds and runs the k6 binary
+  summary.py       parses summary exports, compares runs
+  guard.py         target allowlist and size limits
+  store.py         run storage
+  durations.py     k6 duration parsing
+  skill.md         bundled Hermes skill
+tests/             unit + end-to-end tests
 ```
 
 ## Safety and limits
@@ -114,8 +119,12 @@ k6pane is for load testing systems you run yourself.
 ## Development
 
 ```bash
-~/.hermes/hermes-agent/venv/bin/python -m pytest
+pip install -e ".[dev]"
+ruff check .
+pytest
 ```
+
+CI (`.github/workflows/ci.yml`) runs lint and the full test suite on every push and pull request, with a real k6 installed. `K6PANE_REQUIRE_K6=1` makes the end-to-end tests fail rather than skip if k6 is missing, so they actually gate pull requests.
 
 Unit tests cover duration parsing, target guards, profile shapes, script generation, summary parsing and comparison. The end-to-end tests start a local HTTP server and run real k6 tests; they're skipped if k6 isn't installed.
 

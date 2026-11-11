@@ -1,5 +1,5 @@
 name: k6pane
-version: 0.1.0
+version: 0.2.0
 description: Local load testing with k6. Generate, run, store and compare k6 load tests from chat.
 author: kaizen
 provides_tools:

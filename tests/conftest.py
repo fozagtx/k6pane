@@ -3,30 +3,41 @@
 import importlib.util
 import sys
 import threading
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
-PKG = "k6pane_under_test"
 
 
-def _load():
-    if PKG in sys.modules:
-        return sys.modules[PKG]
+def load_as_hermes_plugin(name="hermes_plugins_test.k6pane"):
+    """Import the repo root exactly like Hermes' directory-plugin loader does."""
+    parent = name.rsplit(".", 1)[0]
+    if parent not in sys.modules:
+        ns = types.ModuleType(parent)
+        ns.__path__ = []
+        sys.modules[parent] = ns
     spec = importlib.util.spec_from_file_location(
-        PKG, PLUGIN_DIR / "__init__.py", submodule_search_locations=[str(PLUGIN_DIR)]
+        name, PLUGIN_DIR / "__init__.py", submodule_search_locations=[str(PLUGIN_DIR)]
     )
     module = importlib.util.module_from_spec(spec)
-    sys.modules[PKG] = module
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
+@pytest.fixture
+def hermes_loader():
+    return load_as_hermes_plugin
+
+
 @pytest.fixture(scope="session")
 def plugin():
-    return _load()
+    import k6pane
+
+    return k6pane
 
 
 @pytest.fixture
