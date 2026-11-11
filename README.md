@@ -10,7 +10,7 @@ A [Hermes Agent](https://hermes-agent.nousresearch.com) plugin for running [k6](
 | `k6pane_run` | Runs a test. It has two modes. **Structured mode** takes `url` or a multi-step `requests` flow plus a `profile` (`smoke`, `load`, `stress`, `spike`, `soak`, `constant`), or a fixed `rate` in iterations per second (each iteration runs the whole flow). **Custom mode** takes your own `script` or `script_path`. It returns the verdict, RPS, error rate, latency (p50/p90/p95/p99), a per-endpoint breakdown, threshold results and failed checks. `dry_run` only generates the script. |
 | `k6pane_report` | `list` shows recent runs, `get` returns one run's full result, and `compare` diffs a run against a baseline and flags latency, RPS or error regressions. |
 
-There is also a bundled skill (installed to `~/.hermes/skills/k6pane/SKILL.md` on first load). It teaches the agent the workflow: smoke test first, map the user's SLO to thresholds, report the bottleneck, and compare against a baseline.
+There is also a bundled skill, `skills/load-testing/SKILL.md`. Hermes versions with `register_skill` load it as `k6pane:load-testing`; on older ones (0.7.x) add the plugin's `skills/` folder to `skills.external_dirs` and use `-s load-testing` (`k6pane_doctor` prints the exact line). It teaches the agent the workflow: smoke test first, map the user's SLO to thresholds, report the bottleneck, and compare against a baseline.
 
 ## Install
 
@@ -55,26 +55,16 @@ A run returns a compact result the agent summarizes for you:
 ### How it works
 
 ```mermaid
-flowchart TD
-    U["User in chat<br/>'stress test localhost:3000 to 50 users'"] --> H[Hermes Agent]
-    H -->|tool call| R[k6pane_run]
-    R --> M{Mode}
-    M -->|url / requests + profile| G["scriptgen.py<br/>build stages, thresholds, script"]
-    M -->|script / script_path| S[Custom k6 script]
-    G --> GU["guard.py<br/>local targets or K6PANE_ALLOWED_HOSTS<br/>VU / duration / RPS caps"]
-    S --> GU
-    GU -->|blocked| E[Error returned to agent]
-    GU -->|allowed| K["runner.py<br/>k6 run --summary-export"]
-    K --> SE[(summary.json + k6.log)]
-    SE --> P["summary.py<br/>RPS, errors, p50-p99, endpoints, thresholds"]
-    P --> ST[("store.py<br/>plugin-data/k6pane/runs/run_id")]
-    P -->|baseline_run_id| C[Compare vs baseline]
-    ST --> RP["k6pane_report<br/>list / get / compare"]
-    P --> V["Verdict: pass / fail / error"]
-    C --> V
+flowchart LR
+    U([You in chat]) --> H[Hermes]
+    H -->|k6pane_run| B[Build k6 script<br/>or use yours]
+    B --> G{Guard<br/>local targets,<br/>VU/RPS caps}
+    G -->|blocked| H
+    G -->|ok| K[k6 run<br/>fenced to target IPs,<br/>secrets redacted]
+    K --> V[Verdict<br/>pass / fail / invalid]
+    V --> S[(Saved run)]
     V --> H
-    RP --> H
-    H -->|plain-language summary| U
+    S -->|k6pane_report<br/>compare| H
 ```
 
 1. **Script generation**: structured requests are turned into a k6 script. Your config is embedded as JSON, so URLs, headers and bodies can't inject JavaScript. Per-endpoint tags and sub-metric thresholds give a latency and error breakdown for each endpoint.
@@ -112,7 +102,7 @@ tests/             unit + end-to-end tests
 
 k6pane is for load testing systems you run yourself.
 
-- **Targets**: only hosts that resolve to loopback, private or link-local addresses are allowed by default. To test a remote host you own, add it to the `allowed_hosts` setting (see [Settings](#settings); `*.staging.example.com` wildcards work). The agent is told never to change it, and k6pane has no tool that can.
+- **Targets**: only hosts that resolve to loopback or private addresses are allowed by default. Link-local addresses (`169.254.0.0/16`, `fe80::/10`) and the AWS IPv6 metadata address `fd00:ec2::254` are refused, because that is where cloud instance-metadata services live; a host that resolves to one needs its exact name in `allowed_hosts` (wildcards don't count). To test a remote host you own, add it to the `allowed_hosts` setting (see [Settings](#settings); `*.staging.example.com` wildcards work). The agent is told never to change it, and k6pane has no tool that can.
 - **Size caps**: `max_vus` (default 200), `max_duration` (default `30m`) and `max_rps` (default 2000; counted as `rate` × requests per iteration). A test over a limit is rejected, not silently shrunk.
 - **One run at a time**: a lock on the runs directory (released by the OS if the holder dies) rejects a second concurrent run with `Run <id> is already in progress`, because parallel tests on one machine distort each other's numbers.
 - **IP fence**: each target host is resolved once and validated, and k6 is then started with `--blacklist-ip` covering every address except those exact IPs. k6 checks the address it actually connects to, so this one fence blocks:
@@ -163,8 +153,9 @@ Example: `hermes config set plugins.entries.k6pane.settings.allowed_hosts '["sta
 What k6pane does on your machine, so you can decide before installing:
 
 - **Subprocess**: runs the local `k6` binary (`k6 run`, and `k6 version` for the doctor) as a subprocess, never through a shell. It runs no other commands and starts no long-running background processes. Each run ends when the test ends, plus a timeout of the planned duration plus 60 seconds.
-- **Network**: k6 sends load-test traffic only to the targets you ask for, and only to localhost/private-network addresses or hosts listed in `allowed_hosts`. An IP fence (`--blacklist-ip`) blocks every other address, including redirects. Target hostnames are resolved via DNS for validation. k6's anonymous usage report is disabled (`--no-usage-report`). The plugin makes no other network calls: no telemetry, no update checks, no third-party services.
+- **Network**: k6 sends load-test traffic only to the targets you ask for, and only to localhost/private-network addresses or hosts listed in `allowed_hosts`. Link-local and cloud metadata addresses (`169.254.0.0/16`, `fe80::/10`, `fd00:ec2::254`) are refused unless the exact host is allowlisted. An IP fence (`--blacklist-ip`) blocks every other address, including redirects. Target hostnames are resolved via DNS for validation. k6's anonymous usage report is disabled (`--no-usage-report`). The plugin makes no other network calls: no telemetry, no update checks, no third-party services.
 - **Writes**: each run is stored under `<HERMES_HOME>/plugin-data/k6pane/runs/<run_id>/` (or your `home` setting) as the generated script, the k6 summary, the k6 log and the parsed result, all redacted. It also writes a `run.lock` file beside `runs/`. Nothing is written into your projects or into Hermes' own files.
+- **Custom scripts**: a test given as `script` or `script_path` is JavaScript that k6 runs directly on your machine. It runs outside the Hermes terminal sandbox and does not go through Hermes' command approval prompt. k6pane checks it (target hosts, literal credentials, the IP fence) but does not sandbox it, and k6's `open()` can read local files. Review a model-written script before running it against anything that matters.
 - **Reads**: only files you point it at. That's a `script_path` k6 script, which k6 runs with its own directory as the working directory, so the script can `open()` files relative to it. It reads nothing else outside the plugin's data directory.
 - **Credentials**: k6pane stores none. A test that references `${secret.NAME}` resolves `K6PANE_SECRET_NAME` through Hermes' profile-aware secret scope (`agent.secret_scope.get_secret`) at run time, and hands the value to k6 through an inherited pipe, never disk or the command line. It never reads `.env`, `auth.json` or any other credential store itself.
 - **Telemetry**: none.

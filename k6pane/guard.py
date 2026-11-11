@@ -1,9 +1,14 @@
 """Target and size guardrails.
 
 k6pane is meant for load testing systems you run yourself. By default only
-targets that resolve to loopback / private / link-local addresses are allowed.
+targets that resolve to loopback / private addresses are allowed.
 Remote hosts must be listed by the user in K6PANE_ALLOWED_HOSTS (comma separated,
 `*.example.com` wildcards allowed). The model cannot widen this list itself.
+
+Link-local addresses (169.254.0.0/16, fe80::/10) and the AWS IPv6 metadata
+address (fd00:ec2::254) are never "local": they host cloud instance-metadata
+services. A host that resolves to one is refused unless that exact host (not a
+wildcard) is in the allowlist.
 """
 
 from __future__ import annotations
@@ -56,12 +61,30 @@ def extract_urls(text: str) -> List[str]:
     return [u.rstrip(".,;") for u in _URL_RE.findall(text or "")]
 
 
-def _is_local_ip(addr: str) -> bool:
+_METADATA_NETS = tuple(ipaddress.ip_network(n) for n in ("169.254.0.0/16", "fe80::/10", "fd00:ec2::254/128"))
+
+
+def _ip(addr: str):
     try:
         ip = ipaddress.ip_address(addr.split("%", 1)[0])
     except ValueError:
+        return None
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip
+
+
+def _is_metadata_ip(addr: str) -> bool:
+    """Link-local or cloud metadata address: never reachable without an exact allowlist entry."""
+    ip = _ip(addr)
+    return ip is not None and any(ip.version == n.version and ip in n for n in _METADATA_NETS)
+
+
+def _is_local_ip(addr: str) -> bool:
+    ip = _ip(addr)
+    if ip is None or _is_metadata_ip(addr):
         return False
-    return ip.is_loopback or ip.is_private or ip.is_link_local
+    return ip.is_loopback or ip.is_private
 
 
 def resolve_host(host: str) -> List[str]:
@@ -116,8 +139,9 @@ def validate_targets(urls: Iterable[str]) -> Tuple[List[str], List[str], List[st
     """Resolve each target host once. Return (hosts, blocked_hosts, validated_ips).
 
     A host is allowed if it is `localhost`, or every address it resolves to is
-    loopback/private/link-local, or it matches K6PANE_ALLOWED_HOSTS. Unresolvable
-    hosts are blocked.
+    loopback/private, or it matches K6PANE_ALLOWED_HOSTS. A host that resolves to
+    a link-local or metadata address needs an exact (non-wildcard) allowlist
+    entry. Unresolvable hosts are blocked.
     """
     patterns = allowed_hosts()
     hosts: List[str] = []
@@ -133,7 +157,11 @@ def validate_targets(urls: Iterable[str]) -> Tuple[List[str], List[str], List[st
         local = bool(addrs) and all(_is_local_ip(a) for a in addrs)
         if name == "localhost" or name.endswith(".localhost"):
             local = bool(addrs) and all(ipaddress.ip_address(a).is_loopback for a in addrs)
-        if not addrs or not (local or _host_is_allowlisted(host, patterns)):
+        if any(_is_metadata_ip(a) for a in addrs):
+            allowed = name in patterns
+        else:
+            allowed = local or _host_is_allowlisted(host, patterns)
+        if not addrs or not allowed:
             blocked.append(host)
             continue
         ips.extend(a for a in addrs if a not in ips)

@@ -158,6 +158,27 @@ def test_root_shim_loads_like_hermes(hermes_loader):
     assert sorted(calls) == ["k6pane_doctor", "k6pane_report", "k6pane_run"]
 
 
+def test_metadata_service_blocked_by_default(plugin, monkeypatch):
+    from k6pane import guard
+    monkeypatch.delenv("K6PANE_ALLOWED_HOSTS", raising=False)
+    assert guard.check_targets(["http://169.254.169.254/"])[1] == ["169.254.169.254"]
+    for url in ("http://169.254.169.254/latest/meta-data/", "http://169.254.0.1/", "http://[fe80::1]/",
+                "http://[fd00:ec2::254]/", "http://[::ffff:169.254.169.254]/"):
+        assert guard.check_targets([url])[1], url
+    # still private, so a ULA that is not the metadata address stays allowed
+    assert guard.check_targets(["http://[fd00:ec2::253]/"])[1] == []
+
+
+def test_metadata_needs_exact_allowlist_entry(plugin, monkeypatch):
+    from k6pane import guard
+    monkeypatch.setattr(guard, "resolve_host", lambda h: ["169.254.169.254"] if h == "meta.example.com" else [h.strip("[]")])
+    monkeypatch.setenv("K6PANE_ALLOWED_HOSTS", "*.example.com,169.254.*")
+    assert guard.check_targets(["http://meta.example.com/", "http://169.254.169.254/"])[1] == [
+        "meta.example.com", "169.254.169.254"]
+    monkeypatch.setenv("K6PANE_ALLOWED_HOSTS", "meta.example.com,169.254.169.254")
+    assert guard.check_targets(["http://meta.example.com/", "http://169.254.169.254/"])[1] == []
+
+
 def test_unresolvable_host_blocked(plugin, monkeypatch):
     from k6pane import guard
     monkeypatch.setattr(guard, "resolve_host", lambda h: [])
@@ -206,3 +227,13 @@ def test_concurrent_run_rejected_with_holder_id(plugin, k6home, monkeypatch):
     assert "already in progress" in out["error"]
     with store.run_lock("next"):  # released after the holder exits
         pass
+
+
+def test_json_body_given_as_text_is_decoded_once():
+    from k6pane import scriptgen
+    reqs = scriptgen.normalize_requests([{"url": "http://127.0.0.1:1/x", "method": "POST",
+                                          "json": '{"username": "demo", "password": "${secret.PW}"}'}])
+    assert reqs[0]["json"] == {"username": "demo", "password": "${secret.PW}"}
+    import pytest
+    with pytest.raises(ValueError):
+        scriptgen.normalize_requests([{"url": "http://127.0.0.1:1/x", "method": "POST", "json": "{not json"}])
