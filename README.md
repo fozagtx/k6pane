@@ -51,6 +51,29 @@ A run returns a compact result the agent summarizes for you:
 
 ### How it works
 
+```mermaid
+flowchart TD
+    U["User in chat<br/>'stress test localhost:3000 to 50 users'"] --> H[Hermes Agent]
+    H -->|tool call| R[k6pane_run]
+    R --> M{Mode}
+    M -->|url / requests + profile| G["scriptgen.py<br/>build stages, thresholds, script"]
+    M -->|script / script_path| S[Custom k6 script]
+    G --> GU["guard.py<br/>local targets or K6PANE_ALLOWED_HOSTS<br/>VU / duration / RPS caps"]
+    S --> GU
+    GU -->|blocked| E[Error returned to agent]
+    GU -->|allowed| K["runner.py<br/>k6 run --summary-export"]
+    K --> SE[(summary.json + k6.log)]
+    SE --> P["summary.py<br/>RPS, errors, p50-p99, endpoints, thresholds"]
+    P --> ST[("store.py<br/>~/.hermes/k6pane/runs/run_id")]
+    P -->|baseline_run_id| C[Compare vs baseline]
+    ST --> RP["k6pane_report<br/>list / get / compare"]
+    P --> V["Verdict: pass / fail / error"]
+    C --> V
+    V --> H
+    RP --> H
+    H -->|plain-language summary| U
+```
+
 1. **Script generation**: structured requests are turned into a k6 script. Your config is embedded as JSON, so URLs, headers and bodies can't inject JavaScript. Per-endpoint tags and sub-metric thresholds give a latency and error breakdown for each endpoint.
 2. **Execution**: runs `k6 run --summary-export` locally with a timeout of the planned duration plus 60s. On timeout k6 gets SIGINT, so it still writes a summary.
 3. **Parsing**: the k6 summary export is reduced to the numbers that matter. k6 exit codes map to `pass` (all thresholds met), `fail` (a threshold was crossed) or `error` (bad script or config).
@@ -97,3 +120,7 @@ k6pane is for load testing systems you run yourself.
 Unit tests cover duration parsing, target guards, profile shapes, script generation, summary parsing and comparison. The end-to-end tests start a local HTTP server and run real k6 tests; they're skipped if k6 isn't installed.
 
 Tested against k6 v2.3.0 and Hermes Agent v0.7.0.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
