@@ -204,14 +204,27 @@ def _run(args: Dict[str, Any]) -> str:
                     + ", ".join(redact.SECRET_ENV_PREFIX + m for m in missing)
                     + " in ~/.hermes/.env and restart Hermes. Never ask the user to paste the value into chat.",
                     missing_secrets=missing)
-    secret_values = list(bag.values.values())
 
     if dry_run:
         return _ok({"dry_run": True, "mode": mode, "profile": profile, "planned_seconds": planned,
                     "target_hosts": hosts, "warnings": warnings, "script": script_text})
 
     label = str(args.get("label") or (hosts[0] if hosts else "test"))
-    run_dir = store.new_run_dir(label)
+    run_id = store.new_run_id(label)
+    try:
+        with store.run_lock(run_id):
+            return _execute(binary, run_id, label, mode, profile, script_text, script_path_arg, planned, env,
+                            extra_args, cwd, bag, secret_names, target_ips, hosts, warnings, spec_info,
+                            target_rate, rate_duration_s, args)
+    except store.RunInProgress as busy:
+        return _err(f"Run {busy.run_id} is already in progress. Concurrent load tests on one machine distort "
+                    "each other's results; wait for it to finish, then retry.", running_run_id=busy.run_id)
+
+
+def _execute(binary, run_id, label, mode, profile, script_text, script_path_arg, planned, env, extra_args, cwd,
+             bag, secret_names, target_ips, hosts, warnings, spec_info, target_rate, rate_duration_s, args):
+    run_dir = store.create_run_dir(run_id)
+    secret_values = list(bag.values.values())
     script_file = run_dir / "script.js"
     script_file.write_text(redact.redact_text(script_text, secret_values) if mode == "script" else script_text)
     exec_script = Path(str(script_path_arg)).expanduser().resolve() if script_path_arg else script_file

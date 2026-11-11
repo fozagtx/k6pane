@@ -195,3 +195,14 @@ def test_rate_cap_counts_requests_per_iteration(plugin, k6home, monkeypatch):
     out = json.loads(tools.run({"requests": reqs, "rate": 100, "duration": "5s", "dry_run": True}))
     assert "300 requests/s" in out["error"]
     assert "error" not in json.loads(tools.run({"requests": reqs, "rate": 80, "duration": "5s", "dry_run": True}))
+
+
+def test_concurrent_run_rejected_with_holder_id(plugin, k6home, monkeypatch):
+    from k6pane import runner, store, tools
+    monkeypatch.setattr(runner, "find_k6", lambda: "/usr/bin/true")
+    with store.run_lock("20260101-000000-busy-0001"):
+        out = json.loads(tools.run({"url": "http://localhost:1/", "profile": "smoke", "duration": "1s"}))
+    assert out["running_run_id"] == "20260101-000000-busy-0001"
+    assert "already in progress" in out["error"]
+    with store.run_lock("next"):  # released after the holder exits
+        pass

@@ -111,6 +111,7 @@ k6pane is for load testing systems you run yourself.
 
 - **Targets**: only hosts that resolve to loopback, private or link-local addresses are allowed by default. To test a remote host you own, add it to `K6PANE_ALLOWED_HOSTS` (comma separated, `*.staging.example.com` wildcards work) in `~/.hermes/.env`. The agent cannot change this list.
 - **Size caps**: `K6PANE_MAX_VUS` (default 200), `K6PANE_MAX_DURATION` (default `30m`), `K6PANE_MAX_RPS` (default 2000; counted as `rate` × requests per iteration). A test over a limit is rejected, not silently shrunk.
+- **One run at a time**: a lock on the runs directory (released by the OS if the holder dies) rejects a second concurrent run with `Run <id> is already in progress`, because parallel tests on one machine distort each other's numbers.
 - **IP fence**: each target host is resolved once and validated, and k6 is then started with `--blacklist-ip` covering every address except those exact IPs. k6 checks the address it actually connects to, so this one fence blocks:
   - redirects from an allowed host to any other host,
   - DNS rebinding between validation and execution,

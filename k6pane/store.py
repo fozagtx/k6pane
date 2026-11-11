@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import secrets
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+    import msvcrt
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -24,12 +31,19 @@ def runs_dir() -> Path:
     return path
 
 
-def new_run_dir(label: str) -> Path:
+def new_run_id(label: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", label).strip("-").lower()[:40] or "run"
-    run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}-{secrets.token_hex(2)}"
+    return f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}-{secrets.token_hex(2)}"
+
+
+def create_run_dir(run_id: str) -> Path:
     path = runs_dir() / run_id
     path.mkdir(parents=True)
     return path
+
+
+def new_run_dir(label: str) -> Path:
+    return create_run_dir(new_run_id(label))
 
 
 def run_path(run_id: str) -> Optional[Path]:
@@ -78,3 +92,43 @@ def list_runs(limit: int = 10) -> List[Dict[str, Any]]:
         if len(out) >= limit:
             break
     return out
+
+
+class RunInProgress(Exception):
+    def __init__(self, run_id: str):
+        super().__init__(run_id)
+        self.run_id = run_id
+
+
+@contextlib.contextmanager
+def run_lock(run_id: str) -> Iterator[None]:
+    """Single-flight lock across processes. Concurrent k6 runs on one machine corrupt
+    each other's measurements, so a second run fails fast instead of queueing.
+    The OS releases the lock if the holder dies, so it can never go stale."""
+    path = runs_dir().parent / "run.lock"
+    fh = open(path, "a+")
+    try:
+        try:
+            if fcntl:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:  # pragma: no cover
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            fh.seek(0)
+            holder = fh.read().strip() or "unknown"
+            raise RunInProgress(holder) from None
+        fh.seek(0)
+        fh.truncate()
+        fh.write(run_id)
+        fh.flush()
+        try:
+            yield
+        finally:
+            fh.seek(0)
+            fh.truncate()
+            fh.flush()
+            if fcntl:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        fh.close()

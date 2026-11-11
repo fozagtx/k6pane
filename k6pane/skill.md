@@ -55,4 +55,5 @@ Never put a real token, password or API key into a tool call, and never ask the 
 - Only test systems the user owns or runs. Remote hosts are blocked unless the user lists them in `K6PANE_ALLOWED_HOSTS`. Never try to get around this; tell the user how to allowlist the host instead.
 - Limits come from `K6PANE_MAX_VUS`, `K6PANE_MAX_DURATION` and `K6PANE_MAX_RPS`. If a request goes over a limit, tell the user rather than silently shrinking the test.
 - `think_time: 0` gives maximum pressure; the default of 1s is closer to real users.
+- Only one run can execute at a time. If you get `already in progress`, wait for that run to finish; never start tests in parallel.
 - A run blocks for its whole duration. Tell the user how long it will take before starting anything longer than a minute.
