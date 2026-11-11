@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from . import guard, redact, runner, scriptgen, store, summary
+from . import guard, hermes_host, redact, runner, scriptgen, store, summary
 from .durations import parse_duration
 
 _GRACE_S = 60
@@ -21,13 +22,49 @@ _CRED_ASSIGN = re.compile(
 
 def _has_literal_cred(text: str) -> bool:
     for match in _CRED_ASSIGN.finditer(text or ""):
-        value = match.group(3).strip()
+        value = match.group(3)
         if "${" in value:
             continue
-        bare = re.sub(r"^(bearer|basic|token)\s+", "", value, flags=re.IGNORECASE)
+        # Drop the auth scheme first: 'Bearer ' + token is a runtime value, not a literal.
+        bare = re.sub(r"^\s*(bearer|basic|token)\b", "", value, flags=re.IGNORECASE).strip()
         if len(bare) >= 6:
             return True
     return False
+
+
+# k6/secrets `get` returns a Promise; without `await` the request sends "[object Promise]" or {}.
+_SECRET_GET = re.compile(r"\bsecrets\.get\s*\(")
+_AWAITED_SECRET_GET = re.compile(r"\bawait\s+secrets\.get\s*\(")
+
+
+def _unawaited_secret(text: str) -> bool:
+    return bool(_SECRET_GET.search(_AWAITED_SECRET_GET.sub("", text or "")))
+
+
+def _script_text(run_id: str) -> Optional[str]:
+    path = store.run_path(str(run_id))
+    script = path / "script.js" if path else None
+    return script.read_text() if script and script.is_file() else None
+
+
+def _workload_check(current_script: Optional[str], baseline_id: str) -> Optional[Dict[str, Any]]:
+    """Warn when two runs did not execute the same k6 script, so their numbers are not like-for-like."""
+    base_script = _script_text(baseline_id)
+    if current_script is None or base_script is None:
+        return None
+    norm = lambda t: [ln.strip() for ln in t.splitlines() if ln.strip()]  # noqa: E731
+    a, b = norm(base_script), norm(current_script)
+    if a == b:
+        return None
+    changed = [ln for ln in difflib.unified_diff(a, b, lineterm="", n=0)
+               if ln[:1] in "+-" and not ln.startswith(("+++", "---"))]
+    return {
+        "same_workload": False,
+        "warning": "The two runs used different k6 scripts, so RPS and latency differences may come from the "
+                   "script (sleeps, requests, load shape), not the service. Say so before calling anything a "
+                   "regression or an improvement, or rerun with the baseline's exact script.",
+        "script_changes": changed[:8],
+    }
 
 
 def _ok(data: Dict[str, Any]) -> str:
@@ -57,6 +94,7 @@ def doctor(args: Dict[str, Any], **kwargs: Any) -> str:
             },
             "allowed_remote_hosts": guard.allowed_hosts(),
             "runs_dir": str(store.runs_dir()),
+            "skill": dict(hermes_host.skill_status),
             "notes": "Targets must be localhost/private-network unless listed in K6PANE_ALLOWED_HOSTS.",
         })
     except Exception as exc:  # pragma: no cover - defensive
@@ -160,6 +198,10 @@ def _run(args: Dict[str, Any]) -> str:
                         "list the secret NAME in `secrets` and read it with "
                         "`import secrets from 'k6/secrets'; await secrets.get('NAME')`; the user provides "
                         f"the value as {redact.SECRET_ENV_PREFIX}NAME.")
+        if _unawaited_secret(script_text):
+            return _err("`secrets.get(...)` returns a Promise in k6, so without `await` the request sends no "
+                        "real value (every login fails). Use `export default async function () { "
+                        "const pw = await secrets.get('NAME'); ... }`.")
         secret_names = [str(n) for n in (args.get("secrets") or [])]
         urls = guard.extract_urls(script_text) + guard.extract_urls(" ".join(env.values()))
         if not urls:
@@ -279,6 +321,9 @@ def _execute(binary, run_id, label, mode, profile, script_text, script_path_arg,
             result["comparison_error"] = f"Baseline run {baseline_id!r} is invalid and cannot be compared against."
         elif base and base.get("summary"):
             result["comparison"] = summary.compare(compact, base["summary"])
+            workload = _workload_check(script_file.read_text(), str(baseline_id))
+            if workload:
+                result["comparison"]["workload"] = workload
             if verdict == "invalid":
                 result["comparison"]["caveat"] = "This run is invalid; the comparison is not meaningful."
         else:
@@ -327,6 +372,9 @@ def report(args: Dict[str, Any], **kwargs: Any) -> str:
                 return _err("One of the runs has no summary (it errored before k6 produced results).")
             tol = float(args.get("tolerance_pct") or 10)
             cmp = summary.compare(current["summary"], base["summary"], tol)
+            workload = _workload_check(_script_text(str(run_id)), str(baseline_id))
+            if workload:
+                cmp["workload"] = workload
             if current.get("verdict") == "invalid":
                 cmp["caveat"] = "The current run is invalid; the comparison is not meaningful."
             return _ok({"run_id": run_id, "baseline_run_id": baseline_id, **cmp})

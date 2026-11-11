@@ -66,3 +66,23 @@ def test_e2e_saturated_arrival_rate_is_invalid(k6home, local_server):
     assert out["verdict"] == "invalid", out
     assert out["summary"]["dropped_iterations"] > 0
     assert out["invalid_reasons"]
+
+
+def test_compare_flags_different_scripts(tmp_path, monkeypatch):
+    import json as _json
+
+    from k6pane import store, tools
+
+    monkeypatch.setenv("K6PANE_HOME", str(tmp_path))
+    summ = {"latency_ms": {"avg": 1, "p50": 1, "p90": 1, "p95": 1, "p99": 1, "max": 2},
+            "rps": 100, "error_rate": 0}
+    for rid, body in (("a", "http.get(u);"), ("b", "http.get(u);\nsleep(0.1);"), ("c", "http.get(u);")):
+        d = store.runs_dir() / rid
+        d.mkdir(parents=True)
+        (d / "script.js").write_text(body)
+        (d / "result.json").write_text(_json.dumps({"verdict": "pass", "summary": summ}))
+    out = _json.loads(tools.report({"action": "compare", "run_id": "b", "baseline_run_id": "a"}))
+    assert out["workload"]["same_workload"] is False
+    assert "+sleep(0.1);" in out["workload"]["script_changes"]
+    same = _json.loads(tools.report({"action": "compare", "run_id": "c", "baseline_run_id": "a"}))
+    assert "workload" not in same

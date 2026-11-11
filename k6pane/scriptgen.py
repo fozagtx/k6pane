@@ -120,12 +120,19 @@ def normalize_requests(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         headers = r.get("headers") or {}
         if not isinstance(headers, dict):
             raise ValueError(f"requests[{i}].headers must be an object.")
+        body_json = r.get("json")
+        if isinstance(body_json, str):
+            # Agents often pass the body already encoded; encoding it again would send a quoted string.
+            try:
+                body_json = json.loads(body_json)
+            except ValueError:
+                raise ValueError(f"requests[{i}].json must be an object, array or valid JSON text.") from None
         out.append({
             "name": name,
             "method": method,
             "url": url,
             "headers": {str(k): str(v) for k, v in headers.items()},
-            "json": r.get("json"),
+            "json": body_json,
             "body": r.get("body"),
             "expect_status": expect,
             "sleep": float(r.get("sleep", 0) or 0),

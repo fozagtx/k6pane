@@ -302,3 +302,19 @@ def test_readme_discloses_risky_behaviour():
     body = section[1].split("\n## ", 1)[0].lower()
     for topic in ("subprocess", "network", "writes", "reads", "credentials", "telemetry", "background"):
         assert topic in body, f"disclosure section does not mention {topic}"
+
+
+def test_skill_fallback_on_hermes_without_skill_api_is_reported():
+    from pathlib import Path
+
+    from k6pane import hermes_host
+
+    class OldCtx:  # Hermes 0.7.x: register_tool exists, register_skill does not
+        pass
+
+    path = Path("k6pane/skills/load-testing/SKILL.md").resolve()
+    assert hermes_host.register_skill(OldCtx(), "load-testing", path) is False
+    status = hermes_host.skill_status
+    assert status["registered"] is False
+    assert status["skills_dir"] == str(path.parent.parent)
+    assert "skills.external_dirs" in status["fix"]

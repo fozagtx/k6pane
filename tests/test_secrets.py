@@ -146,3 +146,29 @@ def test_e2e_custom_script_env_is_scrubbed_and_secrets_redacted(k6home, local_se
     assert "leak=absent" in log
     haystack = response + _all_artifacts(k6home)
     assert "leak-value-xyz-42" not in haystack and "custom-secret-val-88" not in haystack
+
+
+@pytest.mark.parametrize("src", [
+    "headers: { Authorization: 'Bearer ' + token }",
+    '{"Authorization": "Bearer " + loginRes.json("token")}',
+    "Authorization: `Bearer ${token}`",
+    "{ password: await secrets.get('DEMO_PASSWORD') }",
+])
+def test_runtime_auth_values_are_not_literal_credentials(src):
+    assert not tools._has_literal_cred(src)
+
+
+@pytest.mark.parametrize("src", [
+    "Authorization: 'Bearer abc123xyz'",
+    "{ password: 'hunter2-real' }",
+    "api_key: 'k-0123456789'",
+])
+def test_literal_credentials_still_rejected(src):
+    assert tools._has_literal_cred(src)
+
+
+def test_unawaited_secret_get_is_caught():
+    assert tools._unawaited_secret("const pw = secrets.get('DEMO_PASSWORD');")
+    assert not tools._unawaited_secret("const pw = await secrets.get('DEMO_PASSWORD');")
+    assert not tools._unawaited_secret("const pw = await  secrets.get( 'A' ); const t = await secrets.get('B');")
+    assert tools._unawaited_secret("const a = await secrets.get('A'); const b = secrets.get('B');")

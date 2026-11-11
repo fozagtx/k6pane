@@ -77,12 +77,34 @@ def data_dir() -> Path:
     return Path(plugin_data_dir(PLUGIN_ID))
 
 
+# Outcome of register_skill, reported by k6pane_doctor so a missing skill is never silent.
+skill_status: dict = {"registered": False, "reason": "register() has not run"}
+
+
 def register_skill(ctx: Any, name: str, path: Path) -> bool:
-    """Register the bundled skill read-only. Returns False on Hermes releases without the API."""
+    """Register the bundled skill read-only. Returns False on Hermes releases without the API.
+
+    Older Hermes (e.g. 0.7.x) has no plugin skill API and only discovers skills in
+    ``~/.hermes/skills`` or ``skills.external_dirs``. k6pane never writes there itself;
+    instead the status records the one config line the user can add.
+    """
+    skills_root = str(Path(path).resolve().parent.parent)
     if not hasattr(ctx, "register_skill"):
+        skill_status.update(
+            registered=False,
+            name=name,
+            reason="This Hermes release has no plugin skill API (ctx.register_skill).",
+            fix=f"Add {skills_root} to skills.external_dirs in config.yaml, then use -s {name}.",
+            skills_dir=skills_root,
+        )
         return False
     try:
         ctx.register_skill(name, path)
-        return True
-    except Exception:
+    except Exception as exc:
+        skill_status.update(registered=False, name=name, reason=f"register_skill failed: {exc}",
+                            fix=f"Add {skills_root} to skills.external_dirs in config.yaml.",
+                            skills_dir=skills_root)
         return False
+    skill_status.clear()
+    skill_status.update(registered=True, name=f"{PLUGIN_ID}:{name}")
+    return True
